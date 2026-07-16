@@ -108,6 +108,25 @@ function cleanBody(text: string): string {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// 相手が引用文の中に ⇒/→ で書き込んだ「インライン回答（赤字返信）」を、引用ヘッダ以降も含め全文から拾う。
+function inlineAnswers(text: string): string {
+  const picked: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const t = raw.trim();
+    if (/^[⇒→]/.test(t) && t.replace(/^[⇒→][　\s]*/, "").length > 1) picked.push(t);
+  }
+  return picked.join("\n");
+}
+// スレッド表示用の本文。通常はcleanBody。ただし本文が極端に短い（＝実質の回答が
+// 引用内インラインにある）場合は、⇒/→ のインライン回答を補って回答内容を可視化する。
+function threadBody(text: string): string {
+  const fresh = cleanBody(text);
+  if (fresh.replace(/\s/g, "").length >= 140) return fresh;
+  const inline = inlineAnswers(text);
+  if (!inline) return fresh;
+  return `${fresh}\n\n（引用内のインライン回答）\n${inline}`.trim();
+}
+
 interface Msg {
   from: string;
   fromName: string;
@@ -186,8 +205,15 @@ async function main() {
   const sent = await fetchBox(client, SENT_BOX, since);
   await client.logout();
 
-  // 受信＋送信をスレッド化（正規化件名）
-  const all = [...inbox, ...sent];
+  // 受信＋送信をスレッド化（正規化件名）。同一メッセージ（自分のCC受信＝受信箱と送信済みの
+  // 両方に出るもの等）は messageId で重複排除し、スレッドに同じ本文が二重に並ぶのを防ぐ。
+  const seenIds = new Set<string>();
+  const all = [...inbox, ...sent].filter((m) => {
+    if (!m.messageId) return true;
+    if (seenIds.has(m.messageId)) return false;
+    seenIds.add(m.messageId);
+    return true;
+  });
   const threads = new Map<string, Msg[]>();
   for (const m of all) {
     const key = normalizeSubject(m.subject) || m.messageId;
@@ -238,7 +264,7 @@ async function main() {
     list.push({ subject: last.subject, last: `${last.fromName} <${last.from}>`, count: arr.length, date: last.date.slice(0, 10) });
     if (WRITE) {
       const thread = arr
-        .map((m) => `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${cleanBody(m.text) || "（本文なし）"}`)
+        .map((m) => `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${threadBody(m.text) || "（本文なし）"}`)
         .join("\n\n---\n\n");
       const threadSection = `件名: ${last.subject}\n\n${thread}`;
       // アクティブ(pending/revision)カードは新着があれば最新に更新

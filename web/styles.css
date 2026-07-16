@@ -14,6 +14,8 @@
 
 * { box-sizing: border-box; }
 
+html, body { height: 100%; }
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN",
@@ -23,7 +25,10 @@ body {
   font-size: 14px;
 }
 
-.app { max-width: 1400px; margin: 0 auto; padding: 20px; }
+/* 画面いっぱいの縦フレックス：ヘッダー等は固定、メイン領域だけが内部スクロール */
+.app { max-width: 1400px; margin: 0 auto; padding: 20px; height: 100vh; display: flex; flex-direction: column; }
+/* ヘッダー・バナー・フィルターは縮まず固定 */
+.app > .topbar, .app > .banner, .app > .filterbar { flex: none; }
 
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
@@ -71,12 +76,17 @@ body {
 }
 .count { margin-left: auto; color: var(--muted); font-size: 12px; }
 
-/* layout */
-.layout { display: grid; grid-template-columns: 380px 1fr; gap: 16px; align-items: start; }
-@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+/* layout：メイン領域。ここが残りの高さいっぱいを占め、内部で内側の各列がスクロールする */
+.layout { display: grid; grid-template-columns: 380px 1fr; gap: 16px; align-items: stretch; flex: 1; min-height: 0; }
+@media (max-width: 900px) {
+  /* 画面が狭いときはページ全体を通常スクロールに戻す（内部スクロールの入れ子を避ける） */
+  .app { height: auto; }
+  .layout { grid-template-columns: 1fr; }
+  .left-col, .detail { overflow: visible; max-height: none; }
+}
 
 /* list */
-.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; max-height: 78vh; overflow-y: auto; }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .list.empty { background: var(--panel); border: 1px dashed var(--border); border-radius: var(--radius); padding: 30px; text-align: center; color: var(--muted); }
 .hint { font-size: 12px; }
 .card {
@@ -106,7 +116,8 @@ body {
 .card.src-teams::before { background: #5059c9; }
 .card.src-tokoton::before { background: #2ba3aa; }
 .card.src-other::before { background: #4a5568; }
-.card-title { font-weight: 600; margin-bottom: 6px; line-height: 1.4; }
+/* 件名：一目で読めるように少し大きく・折り返して全文表示（切れないように） */
+.card-title { font-weight: 600; font-size: 14.5px; margin-bottom: 6px; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
 .card-meta { display: flex; gap: 6px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
 .card-meta .type { color: var(--accent); }
 .card-meta .due { color: var(--amber); }
@@ -128,7 +139,7 @@ body {
 .view-toggle button.on { background: var(--accent); color: #052012; font-weight: 700; }
 
 /* バーチャルオフィス（Gather風・俯瞰） */
-.office-wrap { overflow-x: auto; padding: 4px 0 8px; }
+.office-wrap { overflow: auto; padding: 4px 0 8px; flex: 1; min-height: 0; }
 .office {
   position: relative; min-width: 860px; aspect-ratio: 16 / 9; min-height: 520px;
   border-radius: 14px; overflow: hidden;
@@ -238,7 +249,7 @@ body {
 .badge.imp-low { color: var(--muted); }
 
 /* left column + reference panel */
-.left-col { display: flex; flex-direction: column; gap: 14px; }
+.left-col { display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .ref-panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
 .ref-panel h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
 .ref-panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -249,7 +260,7 @@ body {
 .ref-fresh { color: var(--muted); }
 
 /* detail */
-.detail { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; min-height: 300px; }
+.detail { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; min-height: 0; overflow-y: auto; }
 .detail.empty { color: var(--muted); display: flex; align-items: center; justify-content: center; }
 .detail-head { display: flex; justify-content: space-between; align-items: start; }
 .head-actions { display: flex; gap: 8px; align-items: center; }

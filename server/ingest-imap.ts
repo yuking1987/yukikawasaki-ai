@@ -51,10 +51,38 @@ function sanitizeId(s: string): string {
   return s.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 50) || "mail";
 }
 
+// 署名/引用ヘッダの開始行。※「株式会社グレート・ビーンズ」「福岡市中央区薬院」は
+// クライアントの宛名(冒頭)にも出るため入れない（誤って全文カットするのを防ぐ）。
+// GB署名は直前のCII広告「【人材の定着」/ "===="/"----"/ URL で確実に切れる。
 const SIG_RE =
-  /^(--\s*$|={3,}|＝{3,}|▲▽|[┏┃┗]|＊{2,}|■|【人材の定着|・(離職率|活躍する人材)|「?マンガでわかるCIY|https?:\/\/ciy-biz|株式会社[　 ]?グレート・ビーンズ|福岡市中央区薬院|プライバシーマーク|Tel[ 　]|TEL[：:]|Fax[ 　]|Mobile)/;
+  /^(--\s*$|={3,}|＝{3,}|-{4,}|▲▽|[┏┃┗]|＊{2,}|■{2,}|【人材の定着|・(離職率|活躍する人材)|「?マンガでわかるCIY|https?:\/\/ciy-biz|プライバシーマーク|Tel[ 　]|TEL[：:]|Fax[ 　]|Mobile)/;
 const QUOTE_HDR_RE =
   /^(-{5,}$|.*\d{4}年\d{1,2}月\d{1,2}日.*(のメール|：$|:$)|On .*wrote:$|.*<[^>]+>のメール)/;
+// HTMLメール（プレーンテキストが無い相互リンク系等）から本文を復元。
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6]|table)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+// 本文取得：プレーンテキスト優先、無ければHTMLから復元。
+function bodyText(p: ParsedMail): string {
+  if (p.text && p.text.trim()) return p.text.trim();
+  if (p.html) return htmlToText(p.html);
+  if (typeof p.textAsHtml === "string") return htmlToText(p.textAsHtml);
+  return "";
+}
+
 function cleanBody(text: string): string {
   const out: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -101,7 +129,7 @@ async function fetchBox(client: ImapFlow, path: string, since: Date): Promise<Ms
         fromName: p.from?.value?.[0]?.name || from,
         subject: p.subject || "(件名なし)",
         date: (rawDate instanceof Date ? rawDate : new Date(rawDate)).toISOString(),
-        text: (p.text || "").trim(),
+        text: bodyText(p),
         messageId: p.messageId || "",
       });
     }

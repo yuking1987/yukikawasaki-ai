@@ -25,7 +25,7 @@ const ACCOUNTS = [
 ].filter((a): a is { user: string; pass: string } => !!a.user && !!a.pass);
 
 const SIG_CUT =
-  /^(【人材の定着|株式会社[　 ]?グレート・ビーンズ|={4,}|-{4,}|▲▽|[┏┗]|＊{4,}|プライバシーマーク|--\s*$)/;
+  /^(【人材の定着|={4,}|-{4,}|▲▽|[┏┗]|＊{4,}|プライバシーマーク|--\s*$)/;
 function cleanBody(text: string): string {
   const lines = text.split(/\r?\n/);
   let cut = lines.findIndex((l) => SIG_CUT.test(l.trim()));

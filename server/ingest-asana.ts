@@ -32,7 +32,7 @@ async function asana<T = unknown>(pathq: string): Promise<T> {
 
 // コメント/説明のノイズ（CIY署名・引用）を除去
 const SIG_CUT =
-  /^(【人材の定着|株式会社[　 ]?グレート・ビーンズ|={4,}|-{4,}|▲▽|プライバシーマーク|差出人:|送信日時:|宛先:|--\s*$)/;
+  /^(【人材の定着|={4,}|-{4,}|▲▽|プライバシーマーク|差出人:|送信日時:|宛先:|--\s*$)/;
 function clean(text: string): string {
   const lines = (text || "").split(/\r?\n/);
   let cut = lines.findIndex((l) => SIG_CUT.test(l.trim()));
@@ -90,7 +90,8 @@ async function main() {
   const existing = await listItems();
   let written = 0,
     updated = 0,
-    closed = 0;
+    closed = 0,
+    reopened = 0;
 
   for (const t of tasks) {
     const key = `asana:${t.gid}`;
@@ -112,9 +113,13 @@ async function main() {
       `/tasks/${t.gid}/stories?opt_fields=created_at,created_by.name,type,text,resource_subtype`
     );
     const comments = stories.filter((s) => s.type === "comment" && s.text);
+    const notesClean = clean(t.notes);
+    // 情報ゼロ（説明欄なし＆コメントなし）のタスクはカード化しない。
+    // ※後で説明やコメントが付けば、その時の取り込みで拾う（match無し→情報あり→新規作成）。
+    if (!notesClean && comments.length === 0 && !match) continue;
     const lastId = comments.length ? comments[comments.length - 1].gid : t.gid;
     const thread =
-      `件名: ${t.name}\n\n【説明欄】\n${clean(t.notes) || "（説明なし）"}\n\n` +
+      `件名: ${t.name}\n\n【説明欄】\n${notesClean || "（説明なし）"}\n\n` +
       comments
         .map(
           (c) =>
@@ -123,16 +128,37 @@ async function main() {
         .join("\n\n---\n\n");
     const threadSection = thread;
 
+    // 「サポートGB / 川崎さん」が最後のコメント＝クライアントへ返信済みの合図（対応済み）。
+    // 井上さん等の社内メンバーの最後コメントは"未対応"扱い（社内フォローが必要なため）。
+    const lastComment = comments[comments.length - 1];
+    const gbReplied =
+      !!lastComment &&
+      /サポートGB|川崎|kawasaki|yuki kawasaki/i.test(lastComment.created_by?.name || "");
+
     if (match) {
-      if (
-        (match.status === "pending" || match.status === "revision") &&
-        match.thread_last_id !== lastId
-      ) {
-        await updateThread(match.id, threadSection, lastId);
-        updated++;
+      if (match.status === "pending" || match.status === "revision") {
+        if (match.thread_last_id !== lastId) {
+          await updateThread(match.id, threadSection, lastId);
+          updated++;
+        }
+        if (gbReplied) {
+          // GB側が最後に返信 → 対応済みに自動クローズ（承認待ちから消える）
+          await updateStatus(match.id, "done");
+          closed++;
+        }
+      } else if (match.status === "done") {
+        // 対応済みでも、先方(非GB)から新着コメントが来たら承認待ちへ自動復活
+        if (match.thread_last_id !== lastId && !gbReplied) {
+          await updateThread(match.id, threadSection, lastId);
+          await updateStatus(match.id, "pending");
+          reopened++;
+        }
       }
       continue;
     }
+
+    // 新規タスク：GBが既に最後に返信済みなら作らない（対応済みなので）
+    if (gbReplied) continue;
 
     const text = `${t.name}\n${t.notes || ""}`;
     const maintenance = /保守|障害|サーバ|SSL|移行|ドメイン|メンテ|バックアップ/.test(text);
@@ -161,7 +187,7 @@ async function main() {
   }
 
   console.log(
-    `[asana] 対象 ${tasks.length} タスク → 新規 ${written} / スレッド更新 ${updated} / 完了クローズ ${closed}`
+    `[asana] 対象 ${tasks.length} タスク → 新規 ${written} / スレッド更新 ${updated} / 対応済みクローズ ${closed} / 再オープン ${reopened}`
   );
 }
 

@@ -25,7 +25,7 @@ const ACCOUNTS = [
 // 収穫用の緩いクリーナー：末尾のGB署名/広告ブロック以降だけ落とし、
 // 引用＋インライン回答（→で答えるスタイル）や短文は残す。長すぎる場合のみ2500字で打ち切り。
 const SIG_CUT_RE =
-  /^(【人材の定着|株式会社[　 ]?グレート・ビーンズ|={4,}|-{4,}|▲▽|[┏┗]|＊{4,}|プライバシーマーク|--\s*$)/;
+  /^(【人材の定着|={4,}|-{4,}|▲▽|[┏┗]|＊{4,}|プライバシーマーク|--\s*$)/;
 function cleanBody(text: string): string {
   const lines = text.split(/\r?\n/);
   let cut = lines.findIndex((l) => SIG_CUT_RE.test(l.trim()));

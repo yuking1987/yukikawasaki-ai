@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState, useCallback, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
 import { api, type ItemFull, type ReferenceMeta } from "./api.ts";
 import {
   TYPE_LABELS,
   STATUS_LABELS,
   SOURCE_LABELS,
   AUDIENCE_LABELS,
-  IMPORTANCE_LABELS,
   SOURCES,
   AUDIENCES,
   STATUSES,
@@ -38,6 +37,10 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"dashboard" | "office">("office");
 
+  // メインエリア（一覧）のスクロール枠。初期表示は最下部にしたい。
+  const leftColRef = useRef<HTMLDivElement>(null);
+  const didInitialScrollRef = useRef(false);
+
   const reload = useCallback(async () => {
     try {
       // 「保留中(スルー中)」は擬似ステータス。サーバにはpendingで問い合わせ、クライアントで絞る。
@@ -69,6 +72,22 @@ export function App() {
     const t = setInterval(() => reload(), 5000);
     return () => clearInterval(t);
   }, [reload, view]);
+
+  // ダッシュボードを離れたら、次に入ったとき再び最下部へ寄せるためリセット
+  useEffect(() => {
+    if (view !== "dashboard") didInitialScrollRef.current = false;
+  }, [view]);
+
+  // ダッシュボード表示で一覧が読み込まれたら、初回だけ最下部へスクロール（自動更新のたびには動かさない）
+  useEffect(() => {
+    if (view !== "dashboard" || didInitialScrollRef.current || items.length === 0)
+      return;
+    const el = leftColRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      didInitialScrollRef.current = true;
+    }
+  }, [items, view]);
 
   // 初期未選択のときだけ先頭を自動選択（明示選択は上書きしない＝オフィスから開いた項目を保持）
   useEffect(() => {
@@ -132,7 +151,7 @@ export function App() {
             count={items.length}
           />
           <div className="layout">
-            <div className="left-col">
+            <div className="left-col" ref={leftColRef}>
               <ItemList
                 items={items}
                 selectedId={selectedId}
@@ -268,7 +287,6 @@ function ItemList({
             {(it.asks || []).some((a) => a && a.question && !a.resolved) && (
               <span className="badge askbadge">🙋 確認</span>
             )}
-            {it.importance === "high" && <span className="badge high">重要</span>}
             <span className="badge audience">{AUDIENCE_LABELS[it.audience]}</span>
           </div>
           <div className="card-title">{it.title}</div>
@@ -662,7 +680,15 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
     (i) => !(i.snooze_until && Date.parse(i.snooze_until) > now)
   );
   const pending = active.filter((i) => i.status === "pending");
-  const inReview = active.filter((i) => i.status === "revision");
+  // Codex専務＝メンター役。各社員が出した成果物のうち「重要案件(importance:high)」で、
+  // まだCodexのクロスチェックを通っていない（passed以外）ものを、
+  // 「専務に見てもらう対象」として数える。要再考(revision)とは無関係。
+  const codexReview = active.filter(
+    (i) =>
+      i.importance === "high" &&
+      i.status === "pending" &&
+      i.review_status !== "passed"
+  );
   const byRole = (key: string) =>
     pending.filter((i) => (key === "reception" ? !i.assignee : i.assignee === key));
 
@@ -721,9 +747,9 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
 
         {/* Codex専務 */}
         <div
-          className={`exec ${inReview.length ? "reviewing" : ""}`}
+          className={`exec ${codexReview.length ? "reviewing" : ""}`}
           style={{ left: "89%", top: "13%" }}
-          title="Codex専務：高リスク案件をクロスチェック"
+          title="Codex専務：各社員の重要案件をレビュー・助言するメンター役"
         >
           <div className="ws-desk" />
           <div className="person">
@@ -732,7 +758,7 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
           <div className="exec-label">
             Codex専務
             <span className="exec-tag">
-              {inReview.length ? `レビュー中 ${inReview.length}` : "監査待機"}
+              {codexReview.length ? `レビュー中 ${codexReview.length}` : "監査待機"}
             </span>
           </div>
         </div>
@@ -1022,11 +1048,6 @@ function DetailPanel({
           <SourceBadge source={item.source} />
           <StatusBadge status={item.status} />
           <span className="badge audience">{AUDIENCE_LABELS[item.audience]}</span>
-          {item.importance && (
-            <span className={`badge imp-${item.importance}`}>
-              重要度: {IMPORTANCE_LABELS[item.importance]}
-            </span>
-          )}
         </div>
         <div className="head-actions">
           {item.source_ref && /^https?:\/\//i.test(item.source_ref) && (

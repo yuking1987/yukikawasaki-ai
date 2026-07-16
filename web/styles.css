@@ -121,6 +121,33 @@ body {
 .badge.newmsg { background: #2a1d0f; color: #f0b866; border-color: #6b4a1f; font-weight: 700; }
 .badge.askbadge { background: #1a2233; color: #8fb8f0; border-color: #33507e; font-weight: 700; }
 
+/* ビュー切替トグル */
+.topbar-actions { display: flex; align-items: center; gap: 12px; }
+.view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.view-toggle button { background: var(--panel-2); color: var(--muted); border: none; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+.view-toggle button.on { background: var(--accent); color: #052012; font-weight: 700; }
+
+/* バーチャルオフィス */
+.office { padding: 8px 4px 24px; }
+.office-floor { background: radial-gradient(1200px 400px at 50% -10%, #16202e 0%, #0e141d 60%); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
+.desk { display: flex; gap: 14px; align-items: flex-start; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+.desk.boss { max-width: 520px; margin: 0 auto 24px; border-color: #6b5a1f; background: linear-gradient(180deg, #1e1a10, var(--panel)); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+.avatar { position: relative; width: 54px; height: 54px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; background: #1c2634; border: 1px solid var(--border); }
+.avatar.boss-av { background: linear-gradient(180deg,#3a2f10,#241d0a); border-color: #6b5a1f; }
+.work-dot { position: absolute; right: 2px; bottom: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--green); border: 2px solid var(--panel); animation: pulse 1.4s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+.desk-info { flex: 1; min-width: 0; }
+.desk-name { font-weight: 700; font-size: 14px; }
+.desk-role { font-size: 11.5px; color: var(--muted); margin: 2px 0 8px; }
+.desk-status { font-size: 12.5px; font-weight: 600; }
+.desk-status.busy { color: var(--amber); }
+.desk-status.idle { color: var(--muted); }
+.staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.desk.staff.working { border-color: #2a4a38; box-shadow: 0 0 0 1px #1f3a2c inset; }
+.desk-bubble { display: inline-block; margin-top: 8px; max-width: 100%; text-align: left; background: #14202c; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; font-size: 11.5px; color: var(--text); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-bubble:hover { border-color: var(--accent); }
+.office-foot { text-align: center; color: var(--muted); font-size: 12px; margin-top: 16px; }
+
 /* AI→人間への依頼パネル */
 .asks-panel { margin: 12px 0; border: 1px solid #33507e; border-radius: 10px; background: #121a2a; padding: 12px 14px; }
 .asks-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; color: #9db8e6; margin-bottom: 10px; }

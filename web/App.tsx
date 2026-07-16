@@ -36,6 +36,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<"dashboard" | "office">("dashboard");
 
   const reload = useCallback(async () => {
     try {
@@ -90,35 +91,61 @@ export function App() {
             <p className="sub">承認ダッシュボード — 社長は判断・承認だけ</p>
           </div>
         </div>
-        <button className="btn primary" onClick={() => setShowNew(true)}>
-          ＋ 新規下書き
-        </button>
+        <div className="topbar-actions">
+          <div className="view-toggle">
+            <button
+              className={view === "dashboard" ? "on" : ""}
+              onClick={() => setView("dashboard")}
+            >
+              📋 ダッシュボード
+            </button>
+            <button
+              className={view === "office" ? "on" : ""}
+              onClick={() => setView("office")}
+            >
+              🏢 オフィス
+            </button>
+          </div>
+          <button className="btn primary" onClick={() => setShowNew(true)}>
+            ＋ 新規下書き
+          </button>
+        </div>
       </header>
 
       {error && <div className="banner error">⚠ {error}</div>}
 
-      <FilterBar
-        filters={filters}
-        projects={projects}
-        onChange={setFilters}
-        count={items.length}
-      />
-
-      <div className="layout">
-        <div className="left-col">
-          <ItemList
-            items={items}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-          />
-          <ReferencePanel />
-        </div>
-        <DetailPanel
-          id={selectedId}
-          onChanged={reload}
-          onClose={() => setSelectedId(null)}
+      {view === "office" ? (
+        <OfficeView
+          onOpenItem={(id) => {
+            setView("dashboard");
+            setSelectedId(id);
+          }}
         />
-      </div>
+      ) : (
+        <>
+          <FilterBar
+            filters={filters}
+            projects={projects}
+            onChange={setFilters}
+            count={items.length}
+          />
+          <div className="layout">
+            <div className="left-col">
+              <ItemList
+                items={items}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+              <ReferencePanel />
+            </div>
+            <DetailPanel
+              id={selectedId}
+              onChanged={reload}
+              onClose={() => setSelectedId(null)}
+            />
+          </div>
+        </>
+      )}
 
       {showNew && (
         <NewDraftModal
@@ -521,6 +548,101 @@ function BodySections({
 function draftText(body: string): string | null {
   const s = parseSections(body).find((x) => metaFor(x.rawTitle).kind === "outgoing");
   return s ? s.content.trim() : null;
+}
+
+// --- バーチャルオフィス：AIスタッフが働く画面 ---
+const STAFF: { key: string; name: string; emoji: string; desc: string }[] = [
+  { key: "reception", name: "受付", emoji: "🛎️", desc: "案件の受付・振り分け" },
+  { key: "direction", name: "ディレクションPM", emoji: "🧭", desc: "打ち返し・進行管理" },
+  { key: "design", name: "デザイナー", emoji: "🎨", desc: "デザイン提案・打ち返し" },
+  { key: "coding", name: "エンジニア", emoji: "💻", desc: "実装方針・技術打ち返し" },
+  { key: "maintenance", name: "保守担当", emoji: "🔧", desc: "障害対応・定期運用" },
+  { key: "ciy-pm", name: "CIY-PM", emoji: "📊", desc: "CIYの進行・改善" },
+  { key: "reviewer", name: "レビュアー", emoji: "🔍", desc: "提案のクロスチェック" },
+];
+
+function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
+  const [all, setAll] = useState<ItemFrontmatter[]>([]);
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const { items } = await api.listItems({});
+        setAll(items);
+      } catch {
+        /* ignore */
+      }
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  const now = Date.now();
+  const active = all.filter(
+    (i) => !(i.snooze_until && Date.parse(i.snooze_until) > now)
+  );
+  const pendingApproval = active.filter((i) => i.status === "pending");
+  const byRole = (key: string) =>
+    active.filter((i) => i.assignee === key && i.status === "pending");
+  const latest = (key: string) => {
+    const list = byRole(key);
+    return list.length ? list[0] : null;
+  };
+
+  return (
+    <div className="office">
+      <div className="office-floor">
+        {/* 社長デスク */}
+        <div className="desk boss">
+          <div className="avatar boss-av">👔</div>
+          <div className="desk-info">
+            <div className="desk-name">川崎さん（社長）</div>
+            <div className="desk-role">判断・承認だけ</div>
+            <div className={`desk-status ${pendingApproval.length ? "busy" : "idle"}`}>
+              {pendingApproval.length
+                ? `📥 承認待ち ${pendingApproval.length}件`
+                : "✅ 承認待ちなし"}
+            </div>
+          </div>
+        </div>
+
+        <div className="staff-grid">
+          {STAFF.map((s) => {
+            const load = byRole(s.key);
+            const top = latest(s.key);
+            const busy = load.length > 0;
+            return (
+              <div key={s.key} className={`desk staff ${busy ? "working" : ""}`}>
+                <div className="avatar">
+                  {s.emoji}
+                  {busy && <span className="work-dot" />}
+                </div>
+                <div className="desk-info">
+                  <div className="desk-name">{s.name}</div>
+                  <div className="desk-role">{s.desc}</div>
+                  <div className={`desk-status ${busy ? "busy" : "idle"}`}>
+                    {busy ? `✍️ 打ち返し ${load.length}件` : "☕ 手が空いています"}
+                  </div>
+                  {top && (
+                    <button
+                      className="desk-bubble"
+                      onClick={() => onOpenItem(top.id)}
+                      title="この案件を開く"
+                    >
+                      💬 {top.project_label || top.project}：{top.title.slice(0, 22)}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <p className="office-foot">
+        AIスタッフが下書きを作り、社長は判断・承認だけ。数字はいまの承認待ち案件数です（5秒ごと更新）。
+      </p>
+    </div>
+  );
 }
 
 // AI→人間への依頼(ask)を1件表示。方針を仰ぐ/調査依頼をGUIで受け答え。

@@ -15,21 +15,41 @@ const REFDIR = path.join(VAULT_PATH, "70_references");
 const CACHE = path.join(VAULT_PATH, "_cache");
 
 async function main() {
-  const cred = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (!cred || !fs.existsSync(cred)) {
-    console.error(
-      "GOOGLE_APPLICATION_CREDENTIALS が未設定/不在です。\n" +
-        "  .env に SA鍵JSONのパスを設定してください（例: GOOGLE_APPLICATION_CREDENTIALS=./forclaude-sa.json）。\n" +
-        "  鍵ファイルは Git追跡外に置いてください（*.credentials.json / service-account*.json は gitignore済み）。"
-    );
+  const scopes = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+  ];
+  // 認証の指定は3通り（いずれか）:
+  //  1) GOOGLE_SA_JSON_B64  … 鍵JSONをbase64にして.envへ（改行入り鍵も安全・推奨の直書き）
+  //  2) GOOGLE_SA_JSON      … 鍵JSONを1行(minify)で.envへ直書き
+  //  3) GOOGLE_APPLICATION_CREDENTIALS … 鍵ファイルのパス
+  // googleapisの型は generic 差異でsheets/driveに直接渡すと衝突するため any で受ける
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let auth: any;
+  const b64 = process.env.GOOGLE_SA_JSON_B64;
+  const raw = process.env.GOOGLE_SA_JSON || process.env.GOOGLE_SERVICE_ACCOUNT;
+  const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  try {
+    if (b64) {
+      const creds = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      auth = new google.auth.GoogleAuth({ credentials: creds, scopes });
+    } else if (raw) {
+      auth = new google.auth.GoogleAuth({ credentials: JSON.parse(raw), scopes });
+    } else if (keyPath && fs.existsSync(keyPath)) {
+      auth = new google.auth.GoogleAuth({ scopes });
+    } else {
+      console.error(
+        "Google認証が未設定です。.env に次のいずれかを設定してください：\n" +
+          "  GOOGLE_SA_JSON_B64=<鍵JSONのbase64>   （推奨・直書き。`base64 -i service-account.json` の出力を貼る）\n" +
+          "  GOOGLE_SA_JSON={...}                   （鍵JSONを1行minifyで直書き）\n" +
+          "  GOOGLE_APPLICATION_CREDENTIALS=./service-account.json （鍵ファイルのパス）"
+      );
+      process.exit(1);
+    }
+  } catch (e) {
+    console.error(`Google認証情報の解析に失敗: ${(e as Error).message}`);
     process.exit(1);
   }
-  const auth = new google.auth.GoogleAuth({
-    scopes: [
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
-      "https://www.googleapis.com/auth/drive.readonly",
-    ],
-  });
   const sheets = google.sheets({ version: "v4", auth });
   const drive = google.drive({ version: "v3", auth });
 

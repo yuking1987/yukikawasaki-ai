@@ -25,6 +25,10 @@ import {
   extractDraft,
   applyProposalOnApprove,
   PROPOSAL_TYPES,
+  readGlobalRules,
+  appendGlobalRule,
+  listIgnoreKeywords,
+  addIgnoreKeyword,
 } from "./items.ts";
 import {
   SOURCES,
@@ -122,8 +126,8 @@ app.get(
   "/api/items",
   h(async (req, res) => {
     let items = await listItems();
-    const { status, source, project, audience, assignee, type } = req.query;
-    const eq = (v: unknown, q: unknown) => !q || String(v ?? "") === String(q);
+    const { status, source, project, audience, assignee, type, q } = req.query;
+    const eq = (v: unknown, qq: unknown) => !qq || String(v ?? "") === String(qq);
     items = items.filter(
       (it) =>
         eq(it.status, status) &&
@@ -133,6 +137,21 @@ app.get(
         eq(it.assignee, assignee) &&
         eq(it.type, type)
     );
+    // キーワード検索：タイトル・案件名で先に判定し、当たらなければ本文（スレッド）も見る
+    const needle = String(q ?? "").trim().toLowerCase();
+    if (needle) {
+      const matched: typeof items = [];
+      for (const it of items) {
+        const meta = `${it.title ?? ""} ${it.project_label ?? ""} ${it.project ?? ""}`.toLowerCase();
+        if (meta.includes(needle)) {
+          matched.push(it);
+          continue;
+        }
+        const full = await readItem(it.id);
+        if (full && full.body.toLowerCase().includes(needle)) matched.push(it);
+      }
+      items = matched;
+    }
     res.json({ items });
   })
 );
@@ -395,6 +414,41 @@ app.post("/api/triage", (req, res) => {
   const high = HIGH_IMPORTANCE_KEYWORDS.some((k) => text.includes(k));
   res.json({ assignee, importance: high ? "high" : "normal" });
 });
+
+// --- 全体ルール（ダッシュボードから追加できる共通ルール） ---
+app.get(
+  "/api/rules",
+  h(async (_req, res) => {
+    const [text, ignore] = await Promise.all([
+      readGlobalRules(),
+      listIgnoreKeywords(),
+    ]);
+    res.json({ text, ignore });
+  })
+);
+app.post(
+  "/api/rules",
+  h(async (req, res) => {
+    const text = typeof req.body?.text === "string" ? req.body.text : "";
+    const ignoreKeyword =
+      typeof req.body?.ignoreKeyword === "string" ? req.body.ignoreKeyword : "";
+    if (!text.trim() && !ignoreKeyword.trim())
+      return res.status(400).json({ error: "ルールかキーワードを入力してください。" });
+    if (text.trim()) {
+      const r = await appendGlobalRule(text);
+      if (!r.ok) return res.status(400).json({ error: r.msg });
+    }
+    if (ignoreKeyword.trim()) {
+      const r = await addIgnoreKeyword(ignoreKeyword);
+      if (!r.ok) return res.status(400).json({ error: r.msg });
+    }
+    const [ruleText, ignore] = await Promise.all([
+      readGlobalRules(),
+      listIgnoreKeywords(),
+    ]);
+    res.json({ ok: true, text: ruleText, ignore });
+  })
+);
 
 // 本番/安定モード: ビルド済みフロント(dist/)を配信。
 // これで `npm start` / `npm run app` は単一プロセス・単一ポートで動き、

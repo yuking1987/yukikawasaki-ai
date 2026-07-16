@@ -19,6 +19,7 @@ type Filters = {
   audience: string;
   assignee: string;
   project: string;
+  q: string;
 };
 
 const EMPTY: Filters = {
@@ -27,6 +28,7 @@ const EMPTY: Filters = {
   audience: "",
   assignee: "",
   project: "",
+  q: "",
 };
 
 export function App() {
@@ -34,6 +36,7 @@ export function App() {
   const [filters, setFilters] = useState<Filters>(EMPTY);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"dashboard" | "office">("office");
 
@@ -126,6 +129,9 @@ export function App() {
               🏢 オフィス
             </button>
           </div>
+          <button className="btn ghost" onClick={() => setShowRules(true)}>
+            ⚙ ルール
+          </button>
           <button className="btn primary" onClick={() => setShowNew(true)}>
             ＋ 新規下書き
           </button>
@@ -178,6 +184,116 @@ export function App() {
           }}
         />
       )}
+
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+    </div>
+  );
+}
+
+// 全体ルール（共通ルール）をダッシュボードから追加するモーダル。
+function RulesModal({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState("");
+  const [ignore, setIgnore] = useState("");
+  const [rulesText, setRulesText] = useState("");
+  const [ignoreList, setIgnoreList] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api.getRules();
+      setRulesText(r.text);
+      setIgnoreList(r.ignore);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const submit = async () => {
+    if (!text.trim() && !ignore.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.addRule(text.trim(), ignore.trim());
+      setRulesText(r.text);
+      setIgnoreList(r.ignore);
+      setText("");
+      setIgnore("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal rules-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>⚙ 全体ルール</h2>
+          <button className="icon-btn" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <p className="hint">
+          全役割のAIが草案づくりで従う共通ルールです。ここで足すと、以降の草案に反映されます。
+        </p>
+
+        <label className="field block">
+          <span>ルールを追加（例：外部への返信では絵文字を使わない）</span>
+          <textarea
+            rows={2}
+            value={text}
+            placeholder="AIに守ってほしいことを一言で"
+            onChange={(e) => setText(e.target.value)}
+          />
+        </label>
+
+        <label className="field block">
+          <span>取り込まないメールのキーワード（例：WordPress 更新）</span>
+          <input
+            type="text"
+            value={ignore}
+            placeholder="件名や送信元にこの語を含むメールはカード化しません"
+            onChange={(e) => setIgnore(e.target.value)}
+          />
+        </label>
+
+        {err && <div className="banner error">⚠ {err}</div>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>
+            閉じる
+          </button>
+          <button
+            className="btn primary"
+            disabled={busy || (!text.trim() && !ignore.trim())}
+            onClick={submit}
+          >
+            {busy ? "追加中…" : "追加する"}
+          </button>
+        </div>
+
+        {ignoreList.length > 0 && (
+          <div className="rules-ignore">
+            <div className="rules-sub">現在の「取り込まない」キーワード</div>
+            <div className="chips">
+              {ignoreList.map((k) => (
+                <span key={k} className="chip">
+                  {k}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <details className="rules-current">
+          <summary>いまの全体ルールを見る</summary>
+          <pre className="rules-pre">{rulesText || "（読み込み中…）"}</pre>
+        </details>
+      </div>
     </div>
   );
 }
@@ -196,6 +312,16 @@ function FilterBar({
   const set = (k: keyof Filters, v: string) => onChange({ ...filters, [k]: v });
   return (
     <div className="filterbar">
+      <label className="field search-field">
+        <span>検索</span>
+        <input
+          type="search"
+          className="search-input"
+          value={filters.q}
+          placeholder="案件名・件名・本文でさがす"
+          onChange={(e) => set("q", e.target.value)}
+        />
+      </label>
       <Select
         label="状態"
         value={filters.status}
@@ -448,9 +574,25 @@ function incomingLabel(source: ItemFrontmatter["source"]): string {
 // スレッド見出し「YYYY-MM-DD HH:MM 名前 <mail>」を分解。
 function parseHeader(h: string): { when: string; name: string } {
   const m = h.match(/^(\d{4}-\d{2}-\d{2})\s+([\d:]+)?\s*(.+?)(?:\s*<[^>]*>)?\s*$/);
-  const date = m?.[1] ? m[1].slice(5).replace("-", "/") : "";
-  const time = m?.[2] ?? "";
-  return { when: `${date} ${time}`.trim(), name: (m?.[3] ?? h).trim() };
+  const name = (m?.[3] ?? h).trim();
+  if (!m?.[1]) return { when: "", name };
+  const time = m[2] ?? "";
+  // 取り込み時刻は保存上UTC。表示は日本時間(JST=UTC+9)へ変換して、メールソフトと一致させる。
+  if (time) {
+    const d = new Date(`${m[1]}T${time.length === 4 ? "0" + time : time}:00Z`);
+    if (!isNaN(d.getTime())) {
+      const when = new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(d); // → "07/15 19:06"
+      return { when, name };
+    }
+  }
+  return { when: m[1].slice(5).replace("-", "/"), name };
 }
 function initials(name: string): string {
   const n = name.replace(/^（株）|株式会社|\/.*$/g, "").trim();

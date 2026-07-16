@@ -74,6 +74,8 @@ body {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: 7px; padding: 7px 9px; font-size: 13px; font-family: inherit; width: 100%;
 }
+.search-field { min-width: 240px; }
+.search-input { min-width: 240px; }
 .count { margin-left: auto; color: var(--muted); font-size: 12px; }
 
 /* layout：メイン領域。ここが残りの高さいっぱいを占め、内部で内側の各列がスクロールする */
@@ -357,3 +359,10 @@ body {
 .modal h2 { margin-top: 0; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rules-ignore { margin-top: 14px; }
+.rules-sub { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.rules-current { margin-top: 16px; font-size: 13px; color: var(--muted); }
+.rules-current summary { cursor: pointer; }
+.rules-pre { white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 8px; max-height: 280px; overflow: auto; font-size: 12px; color: var(--text); }

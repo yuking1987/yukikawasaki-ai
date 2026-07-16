@@ -277,6 +277,85 @@ export async function appendMemory(rec: MemoryRecord): Promise<void> {
   await fsp.appendFile(file, entry, "utf8");
 }
 
+// ============================================================
+// 全体ルール（ダッシュボードから社長が追加できる共通ルール）
+// - 文章ルール → 10_rules/global.md の専用セクションに追記（AIが草案時に読む）
+// - 「このメールは無視」→ 10_rules/ingest-ignore.txt に追記（取り込みが件名/送信元で判定）
+// ============================================================
+const GUI_RULES_HEADING = "## ダッシュボードから追加したルール";
+const IGNORE_REL = "10_rules/ingest-ignore.txt";
+
+export async function readGlobalRules(): Promise<string> {
+  try {
+    return await fsp.readFile(path.join(VAULT_PATH, "10_rules", "global.md"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+export async function appendGlobalRule(
+  text: string
+): Promise<{ ok: boolean; msg?: string }> {
+  const t = (text || "").trim();
+  if (!t) return { ok: false, msg: "ルールが空です" };
+  const rel = "10_rules/global.md";
+  if (!noSymlinkInPath(rel))
+    return { ok: false, msg: "ルールファイルがリンクのため拒否しました" };
+  const file = path.join(VAULT_PATH, rel);
+  let content = "";
+  try {
+    content = await fsp.readFile(file, "utf8");
+  } catch {
+    return { ok: false, msg: "global.md が見つかりません" };
+  }
+  const date = new Date().toISOString().slice(0, 10);
+  const bullet = `- ${t}（追加: ${date}）\n`;
+  if (content.includes(GUI_RULES_HEADING + "\n")) {
+    content = content.replace(
+      GUI_RULES_HEADING + "\n",
+      GUI_RULES_HEADING + "\n" + bullet
+    );
+  } else {
+    content =
+      content.trimEnd() +
+      `\n\n${GUI_RULES_HEADING}\n> 社長がダッシュボードから追加した共通ルール。全役割エージェントが従う。\n${bullet}`;
+  }
+  await fsp.writeFile(file, content, "utf8");
+  return { ok: true };
+}
+
+export async function listIgnoreKeywords(): Promise<string[]> {
+  try {
+    const c = await fsp.readFile(path.join(VAULT_PATH, IGNORE_REL), "utf8");
+    return c
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s && !s.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+export async function addIgnoreKeyword(
+  kw: string
+): Promise<{ ok: boolean; msg?: string }> {
+  const k = (kw || "").trim();
+  if (!k) return { ok: false, msg: "キーワードが空です" };
+  if (!noSymlinkInPath("10_rules"))
+    return { ok: false, msg: "10_rules がリンクのため拒否しました" };
+  const file = path.join(VAULT_PATH, IGNORE_REL);
+  if (!assertNotSymlink(file))
+    return { ok: false, msg: "無視リストがリンクのため拒否しました" };
+  const existing = await listIgnoreKeywords();
+  if (existing.some((e) => e.toLowerCase() === k.toLowerCase()))
+    return { ok: true }; // 既にある
+  const header = existing.length
+    ? ""
+    : "# 取り込み無視キーワード（1行1件）。件名か送信元にこの語を含むメールはカード化しない。\n";
+  await fsp.appendFile(file, header + k + "\n", "utf8");
+  return { ok: true };
+}
+
 export const PROPOSAL_TYPES = [
   "persona_proposal",
   "tone_proposal",
@@ -417,7 +496,8 @@ export async function appendReplyExample(rec: {
 export async function updateThread(
   id: string,
   threadText: string,
-  lastId: string
+  lastId: string,
+  resetDraft = false
 ): Promise<{ ok: boolean }> {
   const item = await readItem(id);
   if (!item) return { ok: false };
@@ -432,6 +512,18 @@ export async function updateThread(
     const rest = body.indexOf("\n## ", start + marker.length);
     newBody =
       body.slice(0, start) + section + (rest === -1 ? "" : "\n" + body.slice(rest + 1));
+  }
+  // 復活時など、古い草案を破棄して作り直させたい場合は '## ドラフト' をプレースホルダに戻す
+  if (resetDraft) {
+    const dmark = "## ドラフト";
+    const ds = newBody.indexOf(dmark);
+    if (ds !== -1) {
+      const dnext = newBody.indexOf("\n## ", ds + dmark.length);
+      newBody =
+        newBody.slice(0, ds) +
+        `${dmark}\n（AIが草案を作成予定）\n` +
+        (dnext === -1 ? "" : "\n" + newBody.slice(dnext + 1));
+    }
   }
   const { body: _b, ...fm } = item;
   const next: ItemFrontmatter = {

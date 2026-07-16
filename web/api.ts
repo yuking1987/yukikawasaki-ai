@@ -84,4 +84,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ type, text }),
     }),
+  getRules: () => req<{ text: string; ignore: string[] }>(`/api/rules`),
+  addRule: (text: string, ignoreKeyword: string) =>
+    req<{ ok: boolean; text: string; ignore: string[] }>(`/api/rules`, {
+      method: "POST",
+      body: JSON.stringify({ text, ignoreKeyword }),
+    }),
 };

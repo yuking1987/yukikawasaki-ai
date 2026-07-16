@@ -7,6 +7,7 @@ import {
   updateStatus,
   updateThread,
   appendReplyExample,
+  listIgnoreKeywords,
 } from "./items.ts";
 import type { ItemFrontmatter } from "../shared/roles.ts";
 
@@ -27,6 +28,18 @@ const ME = (process.env.KAWASAKI_GMAIL || USER).toLowerCase();
 const WRITE = process.argv.includes("--write");
 const DAYS = Number(process.env.IMAP_SINCE_DAYS || 30);
 const SENT_BOX = process.env.IMAP_SENT || "INBOX.Sent";
+// 社長がダッシュボードから登録した「取り込み無視キーワード」。件名/送信元に含めばカード化しない。
+let IGNORE_KEYWORDS: string[] = [];
+function matchesIgnore(from: string, subject: string): boolean {
+  if (IGNORE_KEYWORDS.length === 0) return false;
+  const hay = `${from} ${subject}`.toLowerCase();
+  // 空白区切りの各語が「すべて含まれる」ANDマッチ（連続一致でなく語の共起で判定）。
+  // 例:「WordPress 更新」→ 件名に WordPress と 更新 の両方があれば無視。
+  return IGNORE_KEYWORDS.some((k) => {
+    const tokens = k.toLowerCase().split(/\s+/).filter(Boolean);
+    return tokens.length > 0 && tokens.every((t) => hay.includes(t));
+  });
+}
 
 function junkReason(from: string, headers: Map<string, string>): string | null {
   const f = from.toLowerCase();
@@ -121,8 +134,12 @@ async function fetchBox(client: ImapFlow, path: string, since: Date): Promise<Ms
         const v = p.headers.get(k);
         if (v) headers.set(k, String(v));
       }
-      // 受信のみジャンク判定（送信済みは自分の返信なので常に採用）
-      if (from.toLowerCase() !== ME && junkReason(from, headers)) continue;
+      // 受信のみジャンク判定＋無視キーワード判定（送信済みは自分の返信なので常に採用）
+      if (
+        from.toLowerCase() !== ME &&
+        (junkReason(from, headers) || matchesIgnore(from, p.subject || ""))
+      )
+        continue;
       const rawDate = p.date || m.internalDate || new Date();
       res.push({
         from,
@@ -161,6 +178,9 @@ async function main() {
     process.exit(1);
   }
 
+  IGNORE_KEYWORDS = await listIgnoreKeywords();
+  if (IGNORE_KEYWORDS.length)
+    console.log(`[imap] 無視キーワード ${IGNORE_KEYWORDS.length} 件を適用`);
   const since = new Date(Date.now() - DAYS * 24 * 60 * 60 * 1000);
   const inbox = await fetchBox(client, "INBOX", since);
   const sent = await fetchBox(client, SENT_BOX, since);
@@ -180,7 +200,8 @@ async function main() {
     written = 0,
     updated = 0,
     learned = 0,
-    closed = 0;
+    closed = 0,
+    reopened = 0;
   const list: { subject: string; last: string; count: number; date: string }[] = [];
 
   for (const [key, arr] of threads) {
@@ -233,11 +254,22 @@ async function main() {
         }
         continue;
       }
-      // 最終状態(done/rejected/approved)のカードのみ存在する場合、
-      // 新着が無ければ再作成しない。新着があれば「再オープン」として新規pendingを作る。
-      const closed = existing.find((it) => it.thread_key === key);
-      if (closed && (!closed.thread_last_id || closed.thread_last_id === last.messageId))
-        continue;
+      // 最終状態(done/rejected/approved)のカードがある場合：
+      // 相手からの新着（カード最終更新より後のメッセージ）が来たら、同じカードをその場で
+      // 承認待ちに復活させ、古い草案は破棄して作り直させる。
+      // ※ thread_last_id を持たない旧カードでも、メッセージ日時で新着を判定できる。
+      const prior = existing.find((it) => it.thread_key === key);
+      if (prior) {
+        const already = !!prior.thread_last_id && prior.thread_last_id === last.messageId;
+        const lastTime = Date.parse(last.date);
+        const cardTime = Date.parse(prior.updatedAt || prior.createdAt || "1970-01-01");
+        if (!already && lastTime > cardTime) {
+          await updateThread(prior.id, threadSection, last.messageId, true); // 草案リセット
+          await updateStatus(prior.id, "pending");
+          reopened++;
+        }
+        continue; // 既存カードがあるので新規は作らない（重複防止）
+      }
       const id = `mail-${last.date.slice(0, 10)}-${sanitizeId(last.messageId || last.subject)}`;
       const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
       const fm: ItemFrontmatter = {
@@ -267,7 +299,7 @@ async function main() {
     .forEach((t, i) => console.log(`${String(i + 1).padStart(2)}. ${t.date} [${t.count}通] ${t.subject}  ← ${t.last}`));
   if (WRITE)
     console.log(
-      `\n[imap] 新規 ${written} / スレッド更新 ${updated} / 正例学習 ${learned} / 自動クローズ ${closed} 件`
+      `\n[imap] 新規 ${written} / スレッド更新 ${updated} / 再オープン ${reopened} / 正例学習 ${learned} / 自動クローズ ${closed} 件`
     );
   else console.log(`\n（ドライラン。項目化＋正例学習するには: npm run ingest:mail -- --write）`);
 }

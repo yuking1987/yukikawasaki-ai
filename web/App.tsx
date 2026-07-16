@@ -762,8 +762,8 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
               <div className="ws-label">
                 {s.name}
                 <span className="role-tag">{s.role}</span>
+                {busy && <span className="ws-count">{load.length}</span>}
               </div>
-              <div className={`load ${busy ? "" : "zero"}`}>{load.length}</div>
             </div>
           );
         })}

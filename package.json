@@ -14,7 +14,8 @@
     "start": "tsx server/index.ts",
     "ingest:mail": "tsx server/ingest-imap.ts",
     "harvest:replies": "tsx server/harvest-replies.ts",
-    "fetch:refs": "tsx server/fetch-references.ts"
+    "fetch:refs": "tsx server/fetch-references.ts",
+    "harvest:clients": "tsx server/harvest-client-context.ts"
   },
   "dependencies": {
     "express": "^4.19.2",

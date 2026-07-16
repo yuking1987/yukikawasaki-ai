@@ -127,26 +127,60 @@ body {
 .view-toggle button { background: var(--panel-2); color: var(--muted); border: none; padding: 7px 12px; font-size: 13px; cursor: pointer; }
 .view-toggle button.on { background: var(--accent); color: #052012; font-weight: 700; }
 
-/* バーチャルオフィス */
-.office { padding: 8px 4px 24px; }
-.office-floor { background: radial-gradient(1200px 400px at 50% -10%, #16202e 0%, #0e141d 60%); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
-.desk { display: flex; gap: 14px; align-items: flex-start; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
-.desk.boss { max-width: 520px; margin: 0 auto 24px; border-color: #6b5a1f; background: linear-gradient(180deg, #1e1a10, var(--panel)); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-.avatar { position: relative; width: 54px; height: 54px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; background: #1c2634; border: 1px solid var(--border); }
-.avatar.boss-av { background: linear-gradient(180deg,#3a2f10,#241d0a); border-color: #6b5a1f; }
-.work-dot { position: absolute; right: 2px; bottom: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--green); border: 2px solid var(--panel); animation: pulse 1.4s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-.desk-info { flex: 1; min-width: 0; }
-.desk-name { font-weight: 700; font-size: 14px; }
-.desk-role { font-size: 11.5px; color: var(--muted); margin: 2px 0 8px; }
-.desk-status { font-size: 12.5px; font-weight: 600; }
-.desk-status.busy { color: var(--amber); }
-.desk-status.idle { color: var(--muted); }
-.staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-.desk.staff.working { border-color: #2a4a38; box-shadow: 0 0 0 1px #1f3a2c inset; }
-.desk-bubble { display: inline-block; margin-top: 8px; max-width: 100%; text-align: left; background: #14202c; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; font-size: 11.5px; color: var(--text); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.desk-bubble:hover { border-color: var(--accent); }
-.office-foot { text-align: center; color: var(--muted); font-size: 12px; margin-top: 16px; }
+/* バーチャルオフィス（ゲーム風・俯瞰フロア） */
+.office-wrap { overflow-x: auto; padding: 4px 0 8px; }
+.office {
+  position: relative; min-width: 760px; aspect-ratio: 16 / 8.5; min-height: 480px;
+  border-radius: 16px; overflow: hidden;
+  background:
+    linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px),
+    radial-gradient(900px 420px at 50% -8%, #1a2636 0%, #0e141d 62%);
+  background-size: 34px 34px, 34px 34px, 100% 100%;
+  border: 1px solid var(--border);
+}
+/* 社長デスク */
+.boss-desk { position: absolute; transform: translate(-50%, -50%); width: clamp(160px, 20vw, 240px); text-align: center; }
+.boss-desk::after { content: ""; position: absolute; left: 50%; top: 54px; width: 150px; height: 40px; transform: translateX(-50%); border-radius: 8px; background: #6b4a2d; box-shadow: 0 8px 0 #3d2a1b, 0 16px 24px rgba(0,0,0,.4); z-index: -1; }
+.boss-av { font-size: 34px; width: 56px; height: 56px; margin: 0 auto; display: grid; place-items: center; border-radius: 14px; background: linear-gradient(180deg,#3a2f10,#241d0a); border: 3px solid #b58f2f; box-shadow: 0 6px 0 rgba(0,0,0,.35); }
+.boss-label { font-weight: 700; font-size: 12.5px; margin-top: 6px; }
+.tray { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #23303f; border: 1px solid var(--border); color: var(--muted); }
+.tray.has { background: #2a1d0f; color: var(--amber); border-color: #6b4a1f; animation: pulse 1.6s infinite; }
+.tray b { font-size: 14px; }
+/* Codex専務 */
+.exec { position: absolute; transform: translate(-50%, -50%); width: 96px; text-align: center; }
+.exec-av { font-size: 26px; width: 48px; height: 48px; margin: 0 auto; display: grid; place-items: center; border-radius: 12px; background: #241a2e; border: 3px solid #a06bd0; box-shadow: 0 6px 0 rgba(0,0,0,.35); }
+.exec.reviewing .exec-av { animation: bob .9s ease-in-out infinite; box-shadow: 0 0 0 3px rgba(160,107,208,.3), 0 6px 0 rgba(0,0,0,.35); }
+.exec-label { font-size: 11px; font-weight: 700; margin-top: 5px; }
+.exec-tag { display: block; font-size: 10px; font-weight: 400; color: #cda8f0; }
+/* スタッフ */
+.staff { position: absolute; left: var(--x); top: var(--y); transform: translate(-50%, -50%); width: 96px; text-align: center; color: #e5edf5; }
+.staff::before { content: ""; position: absolute; left: 50%; top: 34px; width: 78px; height: 30px; transform: translateX(-50%); border-radius: 6px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); z-index: -1; }
+.avatar { width: 48px; height: 48px; margin: 0 auto 5px; display: grid; place-items: center; border: 3px solid var(--c); border-radius: 12px; background: #101820; font-size: 25px; box-shadow: 0 6px 0 rgba(0,0,0,.35); animation: bob 1.8s ease-in-out infinite; will-change: transform; backface-visibility: hidden; }
+.staff[data-busy="true"] .avatar { animation: bob .9s ease-in-out infinite, glow .5s steps(2) infinite; }
+.label { font-size: 12px; font-weight: 700; line-height: 1.25; }
+.role-tag { display: block; font-size: 10px; font-weight: 400; color: var(--muted); }
+.load { position: absolute; right: 12px; top: -4px; min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: 999px; background: #ef4444; color: #fff; font-size: 11px; font-weight: 700; box-shadow: 0 2px 0 rgba(0,0,0,.3); }
+.load.zero { background: #475569; opacity: .5; }
+.speech { position: absolute; left: 50%; bottom: -6px; transform: translate(-50%, 100%); white-space: nowrap; background: #fff; color: #17202a; border: none; border-radius: 10px; padding: 5px 10px; font-size: 11px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,.35); z-index: 3; animation: pop .3s ease-out; }
+.speech::before { content: ""; position: absolute; left: 50%; top: -5px; transform: translateX(-50%); border: 6px solid transparent; border-bottom-color: #fff; border-top: 0; }
+.speech-sub { display: block; font-weight: 400; color: #52606d; font-size: 10px; }
+.speech:hover { outline: 2px solid var(--accent); }
+/* 書類が社長デスクへ運ばれる */
+.doc { position: absolute; left: 50%; top: 10px; transform: translate(-50%, -50%); font-size: 20px; pointer-events: none; z-index: 2; animation: carry 3.4s ease-in-out infinite; animation-delay: var(--delay); will-change: transform, opacity; }
+@keyframes carry {
+  0% { opacity: 0; transform: translate(-50%,-50%) scale(.8); }
+  12% { opacity: 1; }
+  55% { transform: translate(calc(var(--desk-dx) * .72), calc(var(--desk-dy) * .72 - 18px)) scale(1); }
+  80% { opacity: 1; transform: translate(var(--desk-dx), var(--desk-dy)) scale(.9); }
+  100% { opacity: 0; transform: translate(var(--desk-dx), var(--desk-dy)) scale(.6); }
+}
+@keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes glow { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.3); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes pop { from { opacity: 0; transform: translate(-50%,100%) scale(.7); } to { opacity: 1; transform: translate(-50%,100%) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .avatar, .doc, .tray.has, .exec.reviewing .exec-av { animation: none; } }
+.office-foot { text-align: center; color: var(--muted); font-size: 12px; margin-top: 12px; }
 
 /* AI→人間への依頼パネル */
 .asks-panel { margin: 12px 0; border: 1px solid #33507e; border-radius: 10px; background: #121a2a; padding: 12px 14px; }

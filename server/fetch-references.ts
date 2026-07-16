@@ -83,13 +83,42 @@ async function main() {
         fs.writeFileSync(path.join(outDir, "index.md"), out, "utf8");
         console.log(`✅ ${slug}: シート${tabs.length}枚を取得`);
       } else if (kind === "gdrive") {
-        const list = await drive.files.list({
-          q: `'${source_id}' in parents and trashed=false`,
-          fields: "files(id,name,mimeType,modifiedTime)",
-          pageSize: 200,
-          orderBy: "modifiedTime desc",
-        });
-        const files = list.data.files ?? [];
+        // アクセス確認（フォルダ名が取れれば権限OK）
+        try {
+          const fmeta = await drive.files.get({
+            fileId: source_id,
+            fields: "id,name",
+            supportsAllDrives: true,
+          });
+          console.log(`  フォルダ「${fmeta.data.name}」にアクセスOK`);
+        } catch (e) {
+          console.error(
+            `✗ ${slug}: フォルダにアクセスできません（SAに閲覧共有されているか確認）: ${(e as Error).message}`
+          );
+          continue;
+        }
+        // 共有ドライブ対応＋サブフォルダ再帰で全ファイル収集
+        const walk = async (fid: string, depth: number): Promise<
+          { id?: string | null; name?: string | null; mimeType?: string | null; modifiedTime?: string | null }[]
+        > => {
+          const res = await drive.files.list({
+            q: `'${fid}' in parents and trashed=false`,
+            fields: "files(id,name,mimeType,modifiedTime)",
+            pageSize: 1000,
+            orderBy: "modifiedTime desc",
+            includeItemsFromAllDrives: true,
+            supportsAllDrives: true,
+          });
+          const items = res.data.files ?? [];
+          const out: typeof items = [];
+          for (const it of items) {
+            if (it.mimeType === "application/vnd.google-apps.folder" && depth < 3)
+              out.push(...(await walk(it.id!, depth + 1)));
+            else out.push(it);
+          }
+          return out;
+        };
+        const files = await walk(source_id, 0);
         let idx = `# ${title}（Drive取得 ${new Date().toISOString().slice(0, 10)}・${files.length}件）\n\n`;
         for (const f of files) {
           idx += `- ${f.name}（${f.mimeType?.split(".").pop()}・${f.modifiedTime?.slice(0, 10)}）\n`;

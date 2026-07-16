@@ -550,15 +550,25 @@ function draftText(body: string): string | null {
   return s ? s.content.trim() : null;
 }
 
-// --- バーチャルオフィス：AIスタッフが働く画面 ---
-const STAFF: { key: string; name: string; emoji: string; desc: string }[] = [
-  { key: "reception", name: "受付", emoji: "🛎️", desc: "案件の受付・振り分け" },
-  { key: "direction", name: "ディレクションPM", emoji: "🧭", desc: "打ち返し・進行管理" },
-  { key: "design", name: "デザイナー", emoji: "🎨", desc: "デザイン提案・打ち返し" },
-  { key: "coding", name: "エンジニア", emoji: "💻", desc: "実装方針・技術打ち返し" },
-  { key: "maintenance", name: "保守担当", emoji: "🔧", desc: "障害対応・定期運用" },
-  { key: "ciy-pm", name: "CIY-PM", emoji: "📊", desc: "CIYの進行・改善" },
-  { key: "reviewer", name: "レビュアー", emoji: "🔍", desc: "提案のクロスチェック" },
+// --- バーチャルオフィス（ゲーム風・俯瞰）：名前付きAIスタッフが働く空間 ---
+// x/y はステージ内の%座標。中央上(50,15)が社長デスク。
+const STAFF: {
+  key: string;
+  name: string;
+  role: string;
+  emoji: string;
+  color: string;
+  line: string;
+  x: number;
+  y: number;
+}[] = [
+  { key: "reception", name: "アイ", role: "受付", emoji: "🛎️", color: "#f6c85f", line: "新しい案件、来てます！", x: 15, y: 44 },
+  { key: "direction", name: "ケント", role: "ディレPM", emoji: "🧭", color: "#7dd3fc", line: "打ち返し案、見てください！", x: 35, y: 52 },
+  { key: "design", name: "ミオ", role: "デザイナー", emoji: "🎨", color: "#f0abfc", line: "デザイン提案できました！", x: 65, y: 52 },
+  { key: "coding", name: "リク", role: "エンジニア", emoji: "💻", color: "#86efac", line: "技術の打ち返し案です！", x: 85, y: 44 },
+  { key: "maintenance", name: "タク", role: "保守担当", emoji: "🔧", color: "#fdba74", line: "保守対応の相談です！", x: 24, y: 82 },
+  { key: "ciy-pm", name: "ハル", role: "CIY-PM", emoji: "📊", color: "#a5b4fc", line: "CIYの改善提案です！", x: 50, y: 86 },
+  { key: "reviewer", name: "サト", role: "レビュアー", emoji: "🔍", color: "#c4b5fd", line: "一次レビュー完了です！", x: 76, y: 82 },
 ];
 
 function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
@@ -581,65 +591,80 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
   const active = all.filter(
     (i) => !(i.snooze_until && Date.parse(i.snooze_until) > now)
   );
-  const pendingApproval = active.filter((i) => i.status === "pending");
+  const pending = active.filter((i) => i.status === "pending");
+  const inReview = active.filter((i) => i.status === "revision"); // Codex専務が確認中の想定
   const byRole = (key: string) =>
-    active.filter((i) => i.assignee === key && i.status === "pending");
-  const latest = (key: string) => {
-    const list = byRole(key);
-    return list.length ? list[0] : null;
-  };
+    pending.filter((i) => (key === "reception" ? !i.assignee : i.assignee === key));
 
   return (
-    <div className="office">
-      <div className="office-floor">
-        {/* 社長デスク */}
-        <div className="desk boss">
-          <div className="avatar boss-av">👔</div>
-          <div className="desk-info">
-            <div className="desk-name">川崎さん（社長）</div>
-            <div className="desk-role">判断・承認だけ</div>
-            <div className={`desk-status ${pendingApproval.length ? "busy" : "idle"}`}>
-              {pendingApproval.length
-                ? `📥 承認待ち ${pendingApproval.length}件`
-                : "✅ 承認待ちなし"}
-            </div>
+    <div className="office-wrap">
+      <div className="office">
+        {/* 社長デスク＋決裁トレイ */}
+        <div className="boss-desk" style={{ left: "50%", top: "15%" }}>
+          <div className="boss-av">👔</div>
+          <div className="boss-label">川崎さん（社長）</div>
+          <div className={`tray ${pending.length ? "has" : ""}`}>
+            📥 <b>{pending.length}</b>
           </div>
         </div>
 
-        <div className="staff-grid">
-          {STAFF.map((s) => {
-            const load = byRole(s.key);
-            const top = latest(s.key);
-            const busy = load.length > 0;
-            return (
-              <div key={s.key} className={`desk staff ${busy ? "working" : ""}`}>
-                <div className="avatar">
-                  {s.emoji}
-                  {busy && <span className="work-dot" />}
-                </div>
-                <div className="desk-info">
-                  <div className="desk-name">{s.name}</div>
-                  <div className="desk-role">{s.desc}</div>
-                  <div className={`desk-status ${busy ? "busy" : "idle"}`}>
-                    {busy ? `✍️ 打ち返し ${load.length}件` : "☕ 手が空いています"}
-                  </div>
-                  {top && (
-                    <button
-                      className="desk-bubble"
-                      onClick={() => onOpenItem(top.id)}
-                      title="この案件を開く"
-                    >
-                      💬 {top.project_label || top.project}：{top.title.slice(0, 22)}
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+        {/* Codex専務（レビュー担当） */}
+        <div
+          className={`exec ${inReview.length ? "reviewing" : ""}`}
+          style={{ left: "88%", top: "15%" }}
+          title="Codex専務：高リスク案件をクロスチェック"
+        >
+          <div className="exec-av">🧐</div>
+          <div className="exec-label">
+            Codex専務
+            <span className="exec-tag">
+              {inReview.length ? `レビュー中 ${inReview.length}` : "監査待機"}
+            </span>
+          </div>
         </div>
+
+        {/* スタッフ */}
+        {STAFF.map((s, i) => {
+          const load = byRole(s.key);
+          const busy = load.length > 0;
+          const top = load[0];
+          return (
+            <div
+              key={s.key}
+              className="staff"
+              data-busy={busy}
+              style={
+                {
+                  "--x": `${s.x}%`,
+                  "--y": `${s.y}%`,
+                  "--c": s.color,
+                  "--desk-dx": `${50 - s.x}%`,
+                  "--desk-dy": `${15 - s.y}%`,
+                  "--delay": `${i * 0.4}s`,
+                } as React.CSSProperties
+              }
+            >
+              {busy && <div className="doc">📄</div>}
+              <div className="avatar">{s.emoji}</div>
+              <div className="label">
+                {s.name}
+                <span className="role-tag">{s.role}</span>
+              </div>
+              <div className={`load ${busy ? "" : "zero"}`}>{load.length}</div>
+              {busy && (
+                <button className="speech" onClick={() => onOpenItem(top.id)}>
+                  {s.line}
+                  <span className="speech-sub">
+                    {top.project_label || top.project}
+                  </span>
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
       <p className="office-foot">
-        AIスタッフが下書きを作り、社長は判断・承認だけ。数字はいまの承認待ち案件数です（5秒ごと更新）。
+        AIスタッフが下書きを作り、書類を社長デスクへ運びます。高リスクはCodex専務がクロスチェック。社長は判断・承認だけ。（5秒ごと更新）
       </p>
     </div>
   );

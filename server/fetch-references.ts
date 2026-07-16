@@ -14,6 +14,108 @@ import { VAULT_PATH } from "./vault.ts"; // .env読込も兼ねる
 const REFDIR = path.join(VAULT_PATH, "70_references");
 const CACHE = path.join(VAULT_PATH, "_cache");
 
+// ============================================================
+// Notion 取得（機械用トークンで直接API。新規依存は入れずNode標準fetchを使用）
+// 前提: .env の NOTION_TOKEN に内部インテグレーションのシークレット。
+//       対象ページ/DBに、そのインテグレーションを「接続」で許可しておくこと。
+// ============================================================
+const NOTION_VER = "2022-06-28";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function notionAPI(pathname: string, token: string, init?: RequestInit): Promise<any> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch(`https://api.notion.com/v1${pathname}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Notion-Version": NOTION_VER,
+        "Content-Type": "application/json",
+        ...(init?.headers || {}),
+      },
+    });
+    if (res.status === 429) {
+      const wait = Number(res.headers.get("Retry-After") || "1") * 1000;
+      await sleep(wait);
+      continue;
+    }
+    const json: any = await res.json();
+    if (!res.ok) throw new Error(`Notion ${res.status}: ${json?.message || pathname}`);
+    return json;
+  }
+  throw new Error(`Notion: レート制限で諦めました (${pathname})`);
+}
+
+const rich = (arr: any[]): string => (arr || []).map((t) => t?.plain_text || "").join("");
+
+// 1ブロックをMarkdown風テキストへ。子がある場合は再帰。
+async function renderBlocks(blockId: string, token: string, depth: number): Promise<string> {
+  if (depth > 6) return "";
+  let out = "";
+  let cursor: string | undefined;
+  do {
+    const q = cursor ? `?start_cursor=${cursor}&page_size=100` : `?page_size=100`;
+    const data = await notionAPI(`/blocks/${blockId}/children${q}`, token);
+    for (const b of data.results as any[]) {
+      const t = b.type;
+      const d = b[t] || {};
+      switch (t) {
+        case "heading_1": out += `\n# ${rich(d.rich_text)}\n`; break;
+        case "heading_2": out += `\n## ${rich(d.rich_text)}\n`; break;
+        case "heading_3": out += `\n### ${rich(d.rich_text)}\n`; break;
+        case "paragraph": { const s = rich(d.rich_text); if (s) out += `${s}\n`; break; }
+        case "bulleted_list_item": out += `- ${rich(d.rich_text)}\n`; break;
+        case "numbered_list_item": out += `1. ${rich(d.rich_text)}\n`; break;
+        case "to_do": out += `- [${d.checked ? "x" : " "}] ${rich(d.rich_text)}\n`; break;
+        case "toggle": out += `- ${rich(d.rich_text)}\n`; break;
+        case "quote": out += `> ${rich(d.rich_text)}\n`; break;
+        case "callout": out += `> ${rich(d.rich_text)}\n`; break;
+        case "code": out += `\n\`\`\`\n${rich(d.rich_text)}\n\`\`\`\n`; break;
+        case "divider": out += `\n---\n`; break;
+        case "child_page": out += `\n## ${d.title}\n`; break;
+        default: break;
+      }
+      if (b.has_children && t !== "child_page") {
+        out += await renderBlocks(b.id, token, depth + 1);
+      } else if (t === "child_page") {
+        out += await renderBlocks(b.id, token, depth + 1);
+      }
+    }
+    cursor = data.has_more ? data.next_cursor : undefined;
+  } while (cursor);
+  return out;
+}
+
+async function fetchNotion(rawId: string, token: string, title: string): Promise<string> {
+  const id = rawId.replace(/-/g, "");
+  let header = `# ${title}（Notion取得 ${new Date().toISOString().slice(0, 10)}）\n`;
+  // ページかDBかを判定
+  try {
+    await notionAPI(`/pages/${id}`, token);
+    return header + (await renderBlocks(id, token, 0));
+  } catch (_pageErr) {
+    // DBとして問い合わせ（各行ページの本文も取得）
+    let body = "";
+    let cursor: string | undefined;
+    do {
+      const q: any = { page_size: 100 };
+      if (cursor) q.start_cursor = cursor;
+      const data = await notionAPI(`/databases/${id}/query`, token, {
+        method: "POST",
+        body: JSON.stringify(q),
+      });
+      for (const page of data.results as any[]) {
+        const props = page.properties || {};
+        const titleProp = Object.values(props).find((p: any) => p?.type === "title") as any;
+        const rowTitle = titleProp ? rich(titleProp.title) : "(無題)";
+        body += `\n## ${rowTitle}\n`;
+        body += await renderBlocks(page.id, token, 1);
+      }
+      cursor = data.has_more ? data.next_cursor : undefined;
+    } while (cursor);
+    return header + body;
+  }
+}
+
 async function main() {
   const scopes = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -138,6 +240,16 @@ async function main() {
         }
         fs.writeFileSync(path.join(outDir, "index.md"), idx, "utf8");
         console.log(`✅ ${slug}: Drive ${files.length}件を取得（Docは文字起こしも保存）`);
+      } else if (kind === "notion") {
+        const token = process.env.NOTION_TOKEN;
+        if (!token) {
+          console.log(`- ${slug}: NOTION_TOKEN 未設定のためスキップ（.env に設定してください）`);
+          continue;
+        }
+        const text = await fetchNotion(source_id, token, title);
+        fs.writeFileSync(path.join(outDir, "index.md"), text, "utf8");
+        const chars = text.length;
+        console.log(`✅ ${slug}: Notionを取得（約${chars}文字を保存）`);
       } else {
         console.log(`- ${slug}: 未対応kind(${kind})`);
         continue;

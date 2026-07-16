@@ -1,0 +1,20 @@
+# 依存
+node_modules/
+dist/
+
+# 実データ（会社・クライアントの内部情報を含むためGit追跡しない）
+vault/
+
+# 外部資料キャッシュ・蒸留生データ（内部情報を含む。再生成可能）
+_cache/
+
+# 環境変数・資格情報（サービスアカウント鍵などは絶対にコミットしない）
+.env
+.env.local
+*.credentials.json
+service-account*.json
+secrets/
+
+# OS/エディタ
+.DS_Store
+*.log

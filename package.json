@@ -13,7 +13,8 @@
     "build": "tsc -p tsconfig.node.json && vite build",
     "start": "tsx server/index.ts",
     "ingest:mail": "tsx server/ingest-imap.ts",
-    "harvest:replies": "tsx server/harvest-replies.ts"
+    "harvest:replies": "tsx server/harvest-replies.ts",
+    "fetch:refs": "tsx server/fetch-references.ts"
   },
   "dependencies": {
     "express": "^4.19.2",

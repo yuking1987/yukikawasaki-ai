@@ -68,6 +68,31 @@ export function App() {
     reload();
   }, [reload]);
 
+  // アプリ更新の自動反映：サーバ起動ID(bootId)を監視し、変わったら自動でページを再読み込み。
+  // これでコード更新後に手動リロード(⌘R)しなくても新機能が反映される。
+  // ただし入力中（テキスト欄にフォーカス）は中断させないよう次回まで待つ。
+  useEffect(() => {
+    let boot: string | null = null;
+    const check = async () => {
+      try {
+        const h = await api.health();
+        if (!h.bootId) return;
+        if (boot === null) boot = h.bootId;
+        else if (boot !== h.bootId) {
+          const el = document.activeElement;
+          const typing =
+            !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+          if (!typing) window.location.reload();
+        }
+      } catch {
+        /* サーバ再起動中などの一時的失敗は無視 */
+      }
+    };
+    check();
+    const t = setInterval(check, 15000);
+    return () => clearInterval(t);
+  }, []);
+
   // 自動更新: 5秒ごとに一覧を再取得（ダッシュボード表示中のみ。
   // オフィス表示中は OfficeView が自前でポーリングするため二重取得を避ける）
   useEffect(() => {

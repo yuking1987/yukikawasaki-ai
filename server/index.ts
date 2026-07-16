@@ -105,9 +105,13 @@ const h =
   (req: express.Request, res: express.Response, next: express.NextFunction) =>
     Promise.resolve(fn(req, res)).catch(next);
 
+// サーバ起動ごとに変わるID。フロントはこれを監視し、変わったら自動リロードする
+// （＝コード更新後にブラウザを手動再読み込みしなくても新機能が反映される）。
+const BOOT_ID = String(Date.now());
+
 // --- ヘルスチェック ---
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, vault: VAULT_PATH });
+  res.json({ ok: true, vault: VAULT_PATH, bootId: BOOT_ID });
 });
 
 // --- 定数（GUIの選択肢用） ---

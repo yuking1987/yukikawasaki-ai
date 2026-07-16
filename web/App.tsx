@@ -236,7 +236,7 @@ function ItemList({
             <SourceBadge source={it.source} />
             <StatusBadge status={it.status} />
             {it.thread_updated && <span className="badge newmsg">🔄 新着</span>}
-            {(it.asks || []).some((a) => !a.resolved) && (
+            {(it.asks || []).some((a) => a && a.question && !a.resolved) && (
               <span className="badge askbadge">🙋 確認</span>
             )}
             {it.importance === "high" && <span className="badge high">重要</span>}
@@ -595,8 +595,15 @@ function AsksPanel({
   asks?: Ask[];
   onAnswered: () => void;
 }) {
-  if (!asks || asks.length === 0) return null;
-  const open = asks.filter((a) => !a.resolved).length;
+  const valid = (asks || []).filter(
+    (a): a is Ask =>
+      !!a &&
+      typeof a.id === "string" &&
+      typeof a.question === "string" &&
+      (a.kind === "decision" || a.kind === "investigation")
+  );
+  if (valid.length === 0) return null;
+  const open = valid.filter((a) => !a.resolved).length;
   return (
     <div className="asks-panel">
       <div className="asks-head">
@@ -607,7 +614,7 @@ function AsksPanel({
           <span className="asks-done">すべて回答済み</span>
         )}
       </div>
-      {asks.map((a) => (
+      {valid.map((a) => (
         <AskItem key={a.id} itemId={itemId} ask={a} onAnswered={onAnswered} />
       ))}
       {open === 0 && (
@@ -654,6 +661,23 @@ function DetailPanel({
     load();
   }, [load]);
 
+  // 詳細も5秒ごとに再取得（cronで選択中カードに新着が来たらバナーを出す）。
+  // 編集中・インライン操作中・処理中は触らない（作業を壊さない）。
+  useEffect(() => {
+    if (!id) return;
+    const t = setInterval(async () => {
+      if (editing || panelMode || busy) return;
+      try {
+        const { item: fresh } = await api.getItem(id);
+        setItem(fresh);
+        setDraft(fresh.body);
+      } catch {
+        /* ネットワーク一時失敗は無視 */
+      }
+    }, 5000);
+    return () => clearInterval(t);
+  }, [id, editing, panelMode, busy]);
+
   if (!id) return <div className="detail empty">左の一覧から選択してください。</div>;
   if (!item) return <div className="detail">読み込み中…</div>;
 
@@ -689,7 +713,8 @@ function DetailPanel({
   };
   const approve = () =>
     act(async () => {
-      const r = await api.setStatus(item.id, "approved");
+      // 見ていたスレッド最終IDを送り、cronでの新着とズレていたらサーバが409
+      const r = await api.setStatus(item.id, "approved", undefined, item.thread_last_id ?? "");
       if (r.applied?.applied) return `承認し、${r.applied.target} へ自動反映しました。`;
       if (r.applied?.msg) return `承認しました（反映スキップ: ${r.applied.msg}）。`;
       return "承認しました。送信は手動でお願いします。";

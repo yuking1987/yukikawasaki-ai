@@ -86,6 +86,42 @@ export function checkWritableDirsSafe():
   return { ok: true };
 }
 
+/**
+ * Vaultが書き込み初期化済みか。既定(./vault)はアプリ所有＝欠如は作成OK。
+ * 外部Vaultは REQUIRED_DIRS が揃っていなければ「未初期化」とみなす（自動作成しない）。
+ */
+export function vaultReadiness(): { isDefault: boolean; missing: string[] } {
+  const isDefault = VAULT_PATH === path.resolve(process.cwd(), "vault");
+  const missing = REQUIRED_DIRS.filter(
+    (d) => !fs.existsSync(path.join(VAULT_PATH, d))
+  );
+  return { isDefault, missing };
+}
+
+/**
+ * CLI(取り込み/収穫)の書き込み前ガード。安全検査＋初期化検査をまとめて行う。
+ * 外部Vault未初期化なら false。既定Vaultの不足フォルダはここで作成する。
+ */
+export function ensureWritableForCli(): { ok: true } | { ok: false; msg: string } {
+  const safe = checkWritableDirsSafe();
+  if (!safe.ok)
+    return {
+      ok: false,
+      msg: `Vault安全検査に失敗: ${safe.rel} が想定外の実体(${safe.real})を指しています`,
+    };
+  const { isDefault, missing } = vaultReadiness();
+  if (missing.length > 0) {
+    if (!isDefault)
+      return {
+        ok: false,
+        msg: `外部Vaultが未初期化です（不足: ${missing.join(", ")}）。'npm run setup' を実行してください`,
+      };
+    for (const d of missing)
+      fs.mkdirSync(path.join(VAULT_PATH, d), { recursive: true });
+  }
+  return { ok: true };
+}
+
 const ID_RE = /^[A-Za-z0-9_-]+$/;
 
 export function isValidId(id: string): boolean {

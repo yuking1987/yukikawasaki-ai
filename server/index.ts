@@ -38,7 +38,35 @@ import {
   HIGH_IMPORTANCE_KEYWORDS,
   routeAssignee,
   type ItemFrontmatter,
+  type Ask,
 } from "../shared/roles.ts";
+
+/** asks(AI→人間の依頼)を型・長さ込みで正規化。不正な要素は捨てる。 */
+function normalizeAsks(raw: unknown): Ask[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Ask[] = [];
+  for (const a of raw) {
+    if (!a || typeof a !== "object") continue;
+    const o = a as Record<string, unknown>;
+    const id = typeof o.id === "string" ? o.id.slice(0, 64) : "";
+    const kind =
+      o.kind === "decision" || o.kind === "investigation" ? o.kind : null;
+    const question = typeof o.question === "string" ? o.question.slice(0, 2000) : "";
+    if (!id || !kind || !question) continue;
+    const ask: Ask = { id, kind, question };
+    if (Array.isArray(o.options)) {
+      const opts = o.options
+        .filter((x): x is string => typeof x === "string")
+        .slice(0, 6)
+        .map((x) => x.slice(0, 200));
+      if (opts.length) ask.options = opts;
+    }
+    if (typeof o.answer === "string") ask.answer = o.answer.slice(0, 8000);
+    if (o.resolved === true) ask.resolved = true;
+    out.push(ask);
+  }
+  return out.length ? out.slice(0, 20) : undefined;
+}
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = "127.0.0.1"; // localhost限定。外部公開しない。
@@ -180,6 +208,17 @@ app.patch(
       return res.status(409).json({
         error: `許可されない状態遷移です（${item.status}→${status}）`,
       });
+    // stale draft承認ガード: クライアントが見ていたスレッド最終IDと現行がズレていたら承認させない。
+    // （cronでスレッドが更新された直後の古い草案の承認を防ぐ。GUIは再取得して最新で承認し直す）
+    if (status === "approved" && "expected_thread_last_id" in (req.body ?? {})) {
+      const exp = String(req.body.expected_thread_last_id ?? "");
+      const cur = String(item.thread_last_id ?? "");
+      if (exp !== cur)
+        return res.status(409).json({
+          error: "スレッドに新着があります。最新を確認してから承認してください。",
+          stale: true,
+        });
+    }
     // 却下理由/再考コメント/メモは該当ドラフト本文へ（恒久ルールとは別扱い）
     if (typeof req.body?.note === "string" && req.body.note.trim()) {
       const label =
@@ -485,7 +524,7 @@ function buildFrontmatter(
     thread_last_id:
       typeof b.thread_last_id === "string" ? b.thread_last_id : undefined,
     thread_updated: b.thread_updated === true ? true : undefined,
-    asks: Array.isArray(b.asks) ? (b.asks as ItemFrontmatter["asks"]) : undefined,
+    asks: normalizeAsks(b.asks),
     reviewed_by: REVIEWED_BY.includes(b.reviewed_by as never)
       ? (b.reviewed_by as ItemFrontmatter["reviewed_by"])
       : undefined,

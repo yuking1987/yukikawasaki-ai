@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
-import "./vault.ts"; // .env
+import { ensureWritableForCli } from "./vault.ts"; // .env読込＋安全/初期化検査
 import { appendReplyExample } from "./items.ts";
 
 // ============================================================
@@ -104,6 +104,11 @@ async function main() {
   }
   if (ACCOUNTS.length === 0) {
     console.error("収穫対象アカウントが .env にありません（IMAP_USER/PASSWORD 等）。");
+    process.exit(1);
+  }
+  const ready = ensureWritableForCli();
+  if (!ready.ok) {
+    console.error(`[harvest] ${ready.msg}。中止します。`);
     process.exit(1);
   }
   console.log(`[harvest] from:${ME} を過去${DAYS}日・${ACCOUNTS.length}アカウントから収穫します`);

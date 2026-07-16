@@ -42,17 +42,23 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ body, ...patch }),
     }),
-  setStatus: (id: string, status: Status, note?: string) =>
+  setStatus: (
+    id: string,
+    status: Status,
+    note?: string,
+    expectedThreadLastId?: string
+  ) =>
     req<{
       ok: true;
       applied?: { applied: boolean; already?: boolean; target?: string; msg?: string };
-    }>(
-      `/api/items/${id}/status`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ status, note }),
-      }
-    ),
+    }>(`/api/items/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(
+        expectedThreadLastId === undefined
+          ? { status, note }
+          : { status, note, expected_thread_last_id: expectedThreadLastId }
+      ),
+    }),
   saveRuleCandidate: (id: string, title: string, body: string) =>
     req<{ id: string }>(`/api/rule-candidates`, {
       method: "POST",

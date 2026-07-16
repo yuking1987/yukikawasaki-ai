@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
-import "./vault.ts"; // .env を読み込む（loadDotEnv）
+import { ensureWritableForCli } from "./vault.ts"; // .env読込＋安全/初期化検査
 import {
   createItem,
   listItems,
@@ -116,6 +116,14 @@ async function main() {
     console.error("IMAP設定が不足しています（.env の IMAP_HOST/USER/PASSWORD）。");
     process.exit(1);
   }
+  // 書き込み時はサーバと同じ安全検査＋初期化検査（symlink/外部リンク/外部Vault未初期化）
+  if (WRITE) {
+    const ready = ensureWritableForCli();
+    if (!ready.ok) {
+      console.error(`[imap] ${ready.msg}。書き込みを中止します。`);
+      process.exit(1);
+    }
+  }
   console.log(`[imap] 接続: ${USER}@${HOST}:${PORT}（過去${DAYS}日・${WRITE ? "書き込み" : "ドライラン"}）`);
   const client = new ImapFlow({ host: HOST, port: PORT, secure: true, auth: { user: USER, pass: PASS }, logger: false });
   try {
@@ -184,19 +192,24 @@ async function main() {
         .map((m) => `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${cleanBody(m.text) || "（本文なし）"}`)
         .join("\n\n---\n\n");
       const threadSection = `件名: ${last.subject}\n\n${thread}`;
-      const match = existing.find((it) => it.thread_key === key);
-      if (match) {
-        // 既存カード: 新着があればスレッドを最新に更新（done/rejected は触らない）。
-        if (
-          match.status !== "done" &&
-          match.status !== "rejected" &&
-          match.thread_last_id !== last.messageId
-        ) {
-          await updateThread(match.id, threadSection, last.messageId);
+      // アクティブ(pending/revision)カードは新着があれば最新に更新
+      const active = existing.find(
+        (it) =>
+          it.thread_key === key &&
+          (it.status === "pending" || it.status === "revision")
+      );
+      if (active) {
+        if (active.thread_last_id !== last.messageId) {
+          await updateThread(active.id, threadSection, last.messageId);
           updated++;
         }
         continue;
       }
+      // 最終状態(done/rejected/approved)のカードのみ存在する場合、
+      // 新着が無ければ再作成しない。新着があれば「再オープン」として新規pendingを作る。
+      const closed = existing.find((it) => it.thread_key === key);
+      if (closed && (!closed.thread_last_id || closed.thread_last_id === last.messageId))
+        continue;
       const id = `mail-${last.date.slice(0, 10)}-${sanitizeId(last.messageId || last.subject)}`;
       const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
       const fm: ItemFrontmatter = {

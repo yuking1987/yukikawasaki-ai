@@ -11,5 +11,11 @@ if [ ! -x "$TSX" ]; then
   exit 1
 fi
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') ingest 開始 ====="
+echo "--- mail ---"
 "$TSX" server/ingest-imap.ts -- --write
+# Asana（ASANA_TOKEN が .env にあるときだけ）
+if grep -q "^ASANA_TOKEN=.\+" .env 2>/dev/null; then
+  echo "--- asana ---"
+  "$TSX" server/ingest-asana.ts
+fi
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') ingest 完了 ====="

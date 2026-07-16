@@ -10,6 +10,7 @@ import {
   resolveReferenceRef,
   isValidSlug,
   checkWritableDirsSafe,
+  readSyncStatus,
 } from "./vault.ts";
 import {
   listItems,
@@ -414,6 +415,14 @@ app.post("/api/triage", (req, res) => {
   const high = HIGH_IMPORTANCE_KEYWORDS.some((k) => text.includes(k));
   res.json({ assignee, importance: high ? "high" : "normal" });
 });
+
+// --- 各ツールの最終取り込み時刻 ---
+app.get(
+  "/api/sync-status",
+  h(async (_req, res) => {
+    res.json({ status: readSyncStatus() });
+  })
+);
 
 // --- 全体ルール（ダッシュボードから追加できる共通ルール） ---
 app.get(

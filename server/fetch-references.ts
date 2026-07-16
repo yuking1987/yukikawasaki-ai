@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
 import { google } from "googleapis";
-import { VAULT_PATH } from "./vault.ts"; // .env読込も兼ねる
+import { VAULT_PATH, recordSync } from "./vault.ts"; // .env読込も兼ねる
 
 // ============================================================
 // 参照資料（Google Sheets / Drive）をサービスアカウントで取得し _cache へキャッシュ。
@@ -263,6 +263,7 @@ async function main() {
     }
   }
   console.log("\n完了。GUIの参照一覧が「最終取得」に変わります。");
+  recordSync("references"); // 最終取り込み時刻を記録（画面表示用）
 }
 
 main().catch((e) => {

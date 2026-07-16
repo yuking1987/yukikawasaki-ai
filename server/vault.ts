@@ -37,6 +37,34 @@ export const VAULT_PATH = path.resolve(
   process.env.VAULT_PATH || path.join(process.cwd(), "vault")
 );
 
+/** 各取り込みツールの「最終取り込み時刻」を記録/読み出しする（_cache/sync-status.json）。 */
+export function recordSync(key: string): void {
+  try {
+    const dir = path.join(VAULT_PATH, "_cache");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "sync-status.json");
+    let data: Record<string, string> = {};
+    try {
+      data = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      /* 初回は空 */
+    }
+    data[key] = new Date().toISOString();
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+  } catch {
+    /* 記録失敗は握りつぶす（本処理を止めない） */
+  }
+}
+export function readSyncStatus(): Record<string, string> {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(VAULT_PATH, "_cache", "sync-status.json"), "utf8")
+    );
+  } catch {
+    return {};
+  }
+}
+
 /** アプリが書き込んでよいフォルダ（items配下と履歴）。 */
 export const WRITABLE_DIRS = {
   items: "items",

@@ -84,6 +84,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ type, text }),
     }),
+  syncStatus: () => req<{ status: Record<string, string> }>(`/api/sync-status`),
   getRules: () => req<{ text: string; ignore: string[] }>(`/api/rules`),
   addRule: (text: string, ignoreKeyword: string) =>
     req<{ ok: boolean; text: string; ignore: string[] }>(`/api/rules`, {

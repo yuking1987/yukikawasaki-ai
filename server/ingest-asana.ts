@@ -1,4 +1,4 @@
-import { ensureWritableForCli } from "./vault.ts"; // .env読込＋安全検査
+import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全検査
 import {
   createItem,
   listItems,
@@ -189,6 +189,7 @@ async function main() {
   console.log(
     `[asana] 対象 ${tasks.length} タスク → 新規 ${written} / スレッド更新 ${updated} / 対応済みクローズ ${closed} / 再オープン ${reopened}`
   );
+  recordSync("asana"); // 最終取り込み時刻を記録（画面表示用）
 }
 
 main().catch((e) => {

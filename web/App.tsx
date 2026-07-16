@@ -115,6 +115,7 @@ export function App() {
           </div>
         </div>
         <div className="topbar-actions">
+          <SyncStatus />
           <div className="view-toggle">
             <button
               className={view === "dashboard" ? "on" : ""}
@@ -186,6 +187,52 @@ export function App() {
       )}
 
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+    </div>
+  );
+}
+
+function relTime(iso: string): string {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const s = Math.floor((Date.now() - t) / 1000);
+  if (s < 60) return "たった今";
+  if (s < 3600) return `${Math.floor(s / 60)}分前`;
+  if (s < 86400) return `${Math.floor(s / 3600)}時間前`;
+  return `${Math.floor(s / 86400)}日前`;
+}
+
+// 各取り込みツールの「最終取り込み時刻」をヘッダに表示（1分ごとに更新）。
+function SyncStatus() {
+  const [status, setStatus] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api
+        .syncStatus()
+        .then((r) => alive && setStatus(r.status))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  const defs: [string, string][] = [
+    ["mail", "メール"],
+    ["asana", "Asana"],
+    ["references", "参照"],
+  ];
+  const shown = defs.filter(([k]) => status[k]);
+  if (shown.length === 0) return null;
+  return (
+    <div className="sync-status" title="各ツールの最終取り込み時刻">
+      {shown.map(([k, label]) => (
+        <span key={k} className="sync-item">
+          <span className="sync-dot" />
+          {label} {relTime(status[k])}
+        </span>
+      ))}
     </div>
   );
 }
@@ -667,9 +714,11 @@ function BodySections({
   body: string;
   source: ItemFrontmatter["source"];
 }) {
-  // 「状況分析（AIの読み）」は人間には不要なのでGUIでは非表示（ファイルには残る）
+  // 人間には不要なセクションはGUIでは非表示（ファイルには残る＝AIの学習・履歴用）。
+  // 「状況分析（AIの読み）」／過去の「却下理由」は画面に出さない。
+  const HIDDEN_SECTIONS = ["状況分析", "却下理由"];
   const sections = parseSections(body).filter(
-    (s) => !s.rawTitle.startsWith("状況分析")
+    (s) => !HIDDEN_SECTIONS.some((h) => s.rawTitle.startsWith(h))
   );
   return (
     <div className="sections">

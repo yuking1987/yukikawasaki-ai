@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
-import { ensureWritableForCli } from "./vault.ts"; // .env読込＋安全/初期化検査
+import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全/初期化検査
 import {
   createItem,
   listItems,
@@ -323,11 +323,12 @@ async function main() {
     .sort((a, b) => (a.date < b.date ? 1 : -1))
     .slice(0, 20)
     .forEach((t, i) => console.log(`${String(i + 1).padStart(2)}. ${t.date} [${t.count}通] ${t.subject}  ← ${t.last}`));
-  if (WRITE)
+  if (WRITE) {
     console.log(
       `\n[imap] 新規 ${written} / スレッド更新 ${updated} / 再オープン ${reopened} / 正例学習 ${learned} / 自動クローズ ${closed} 件`
     );
-  else console.log(`\n（ドライラン。項目化＋正例学習するには: npm run ingest:mail -- --write）`);
+    recordSync("mail"); // 最終取り込み時刻を記録（画面表示用）
+  } else console.log(`\n（ドライラン。項目化＋正例学習するには: npm run ingest:mail -- --write）`);
 }
 
 main().catch((e) => {

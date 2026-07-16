@@ -36,7 +36,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"dashboard" | "office">("dashboard");
+  const [view, setView] = useState<"dashboard" | "office">("office");
 
   const reload = useCallback(async () => {
     try {
@@ -62,19 +62,20 @@ export function App() {
     reload();
   }, [reload]);
 
-  // 自動更新: 5秒ごとに一覧を再取得（外部で追加された下書きがリロードなしで出る）
+  // 自動更新: 5秒ごとに一覧を再取得（ダッシュボード表示中のみ。
+  // オフィス表示中は OfficeView が自前でポーリングするため二重取得を避ける）
   useEffect(() => {
+    if (view !== "dashboard") return;
     const t = setInterval(() => reload(), 5000);
     return () => clearInterval(t);
-  }, [reload]);
+  }, [reload, view]);
 
-  // 未選択なら先頭を自動選択（詳細が空のままにしない）
+  // 初期未選択のときだけ先頭を自動選択（明示選択は上書きしない＝オフィスから開いた項目を保持）
   useEffect(() => {
-    if (items.length === 0) return;
-    if (!selectedId || !items.some((i) => i.id === selectedId)) {
+    if (view === "dashboard" && !selectedId && items.length > 0) {
       setSelectedId(items[0].id);
     }
-  }, [items, selectedId]);
+  }, [items, selectedId, view]);
 
   const projects = useMemo(
     () => Array.from(new Set(items.map((i) => i.project))).sort(),
@@ -117,8 +118,9 @@ export function App() {
       {view === "office" ? (
         <OfficeView
           onOpenItem={(id) => {
-            setView("dashboard");
             setSelectedId(id);
+            setView("dashboard");
+            reload(); // 親リストを最新化（オフィス中は親ポーリングが止まっているため）
           }}
         />
       ) : (
@@ -550,25 +552,87 @@ function draftText(body: string): string | null {
   return s ? s.content.trim() : null;
 }
 
+// ドット絵キャラ（自己完結SVGスプライト・外部画像なし）。flipで左右反転＝向かい合い表現。
+function PixelChar({
+  skin = "#f1c27d",
+  hair = "#2b2b33",
+  shirt = "#5b8def",
+  pants = "#33333b",
+  size = 40,
+  flip = false,
+}: {
+  skin?: string;
+  hair?: string;
+  shirt?: string;
+  pants?: string;
+  size?: number;
+  flip?: boolean;
+}) {
+  // 8x12 のドット絵（H=髪 S=肌 E=目 B=服 P=脚）
+  const rows = [
+    "..HHHH..",
+    ".HHHHHH.",
+    ".HSSSSH.",
+    ".SEssES.",
+    ".SSSSSS.",
+    "..SSSS..",
+    ".BBBBBB.",
+    "SBBBBBBS",
+    "SBBBBBBS",
+    ".BBBBBB.",
+    ".PP..PP.",
+    ".PP..PP.",
+  ];
+  const col: Record<string, string> = {
+    H: hair,
+    S: skin,
+    E: "#20202a",
+    B: shirt,
+    P: pants,
+  };
+  const w = 8;
+  const h = rows.length;
+  return (
+    <svg
+      width={size}
+      height={(size * h) / w}
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ shapeRendering: "crispEdges" }}
+    >
+      {/* 反転は内側gに逃がす（svgのtransformはbobアニメ用に空けておく） */}
+      <g transform={flip ? `translate(${w},0) scale(-1,1)` : undefined}>
+        {rows.flatMap((row, y) =>
+          [...row].map((ch, x) => {
+            const c = col[ch];
+            return c ? (
+              <rect key={`${x}-${y}`} x={x} y={y} width={1.02} height={1.02} fill={c} />
+            ) : null;
+          })
+        )}
+      </g>
+    </svg>
+  );
+}
+
 // --- バーチャルオフィス（ゲーム風・俯瞰）：名前付きAIスタッフが働く空間 ---
 // x/y はステージ内の%座標。中央上(50,15)が社長デスク。
 const STAFF: {
   key: string;
   name: string;
   role: string;
-  emoji: string;
-  color: string;
+  hair: string;
+  color: string; // 服の色
   line: string;
   x: number;
   y: number;
 }[] = [
-  { key: "reception", name: "アイ", role: "受付", emoji: "🛎️", color: "#f6c85f", line: "新しい案件、来てます！", x: 15, y: 44 },
-  { key: "direction", name: "ケント", role: "ディレPM", emoji: "🧭", color: "#7dd3fc", line: "打ち返し案、見てください！", x: 35, y: 52 },
-  { key: "design", name: "ミオ", role: "デザイナー", emoji: "🎨", color: "#f0abfc", line: "デザイン提案できました！", x: 65, y: 52 },
-  { key: "coding", name: "リク", role: "エンジニア", emoji: "💻", color: "#86efac", line: "技術の打ち返し案です！", x: 85, y: 44 },
-  { key: "maintenance", name: "タク", role: "保守担当", emoji: "🔧", color: "#fdba74", line: "保守対応の相談です！", x: 24, y: 82 },
-  { key: "ciy-pm", name: "ハル", role: "CIY-PM", emoji: "📊", color: "#a5b4fc", line: "CIYの改善提案です！", x: 50, y: 86 },
-  { key: "reviewer", name: "サト", role: "レビュアー", emoji: "🔍", color: "#c4b5fd", line: "一次レビュー完了です！", x: 76, y: 82 },
+  { key: "reception", name: "アイ", role: "受付", hair: "#8a5a3c", color: "#f6c85f", line: "新しい案件、来てます！", x: 15, y: 46 },
+  { key: "direction", name: "ケント", role: "ディレPM", hair: "#2b2b33", color: "#4a9be0", line: "打ち返し案、見てください！", x: 36, y: 54 },
+  { key: "design", name: "ミオ", role: "デザイナー", hair: "#b8477e", color: "#e05a9b", line: "デザイン提案できました！", x: 64, y: 54 },
+  { key: "coding", name: "リク", role: "エンジニア", hair: "#1f1f26", color: "#3ac0a0", line: "技術の打ち返し案です！", x: 85, y: 46 },
+  { key: "maintenance", name: "タク", role: "保守担当", hair: "#4a3520", color: "#e08a3a", line: "保守対応の相談です！", x: 24, y: 82 },
+  { key: "ciy-pm", name: "ハル", role: "CIY-PM", hair: "#3a2f5a", color: "#8b7ee0", line: "CIYの改善提案です！", x: 50, y: 86 },
+  { key: "reviewer", name: "サト", role: "レビュアー", hair: "#5a4a3a", color: "#5aa0c0", line: "一次レビュー完了です！", x: 76, y: 82 },
 ];
 
 function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
@@ -587,34 +651,84 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
     return () => clearInterval(t);
   }, []);
 
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 4000);
+    return () => clearInterval(t);
+  }, []);
+
   const now = Date.now();
   const active = all.filter(
     (i) => !(i.snooze_until && Date.parse(i.snooze_until) > now)
   );
   const pending = active.filter((i) => i.status === "pending");
-  const inReview = active.filter((i) => i.status === "revision"); // Codex専務が確認中の想定
+  const inReview = active.filter((i) => i.status === "revision");
   const byRole = (key: string) =>
     pending.filter((i) => (key === "reception" ? !i.assignee : i.assignee === key));
+
+  // 打ち合わせ中の社員（順番に社長デスクへ来て向かい合う）
+  const busyStaff = STAFF.map((s) => ({ s, load: byRole(s.key) })).filter(
+    (x) => x.load.length > 0
+  );
+  const meeting = busyStaff.length ? busyStaff[tick % busyStaff.length] : null;
 
   return (
     <div className="office-wrap">
       <div className="office">
-        {/* 社長デスク＋決裁トレイ */}
-        <div className="boss-desk" style={{ left: "50%", top: "15%" }}>
-          <div className="boss-av">👔</div>
+        {/* おしゃれデザイン会社の内装 */}
+        <div className="decor window" />
+        <div className="decor rug" />
+        <div className="decor prop plant1">🪴</div>
+        <div className="decor prop plant2">🪴</div>
+        <div className="decor prop monstera">🌿</div>
+        <div className="decor prop sofa">🛋️</div>
+        <div className="decor prop art1">🖼️</div>
+        <div className="decor prop art2">🖼️</div>
+        <div className="decor prop books">📚</div>
+
+        {/* 社長デスク（打ち合わせ時は来客の方を向く） */}
+        <div className="boss-desk" style={{ left: "50%", top: "14%" }}>
+          <div className="ws-desk boss-furniture">
+            <span className="monitor">🖥️</span>
+          </div>
+          <div className={`person boss ${meeting ? "face-left" : ""}`}>
+            <PixelChar skin="#e8b98a" hair="#25201a" shirt="#2a3a55" size={46} flip={!!meeting} />
+          </div>
           <div className="boss-label">川崎さん（社長）</div>
           <div className={`tray ${pending.length ? "has" : ""}`}>
             📥 <b>{pending.length}</b>
           </div>
+
+          {/* 来客中の社員：社長の前に立って向かい合う */}
+          {meeting && (
+            <div className="visitor" style={{ "--c": meeting.s.color } as React.CSSProperties}>
+              <div className="person face-right">
+                <PixelChar hair={meeting.s.hair} shirt={meeting.s.color} size={40} />
+              </div>
+              <button
+                className="meet-bubble"
+                onClick={() => onOpenItem(meeting.load[0].id)}
+              >
+                {meeting.s.name}：{meeting.s.line}
+                <span className="speech-sub">
+                  {meeting.load[0].project_label || meeting.load[0].project}（
+                  {meeting.load.length}件）
+                </span>
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Codex専務（レビュー担当） */}
+        {/* Codex専務 */}
         <div
           className={`exec ${inReview.length ? "reviewing" : ""}`}
-          style={{ left: "88%", top: "15%" }}
+          style={{ left: "89%", top: "13%" }}
           title="Codex専務：高リスク案件をクロスチェック"
         >
-          <div className="exec-av">🧐</div>
+          <div className="ws-desk" />
+          <div className="person">
+            <PixelChar skin="#e0b088" hair="#c9c9d2" shirt="#3a2f4a" size={42} flip />
+          </div>
           <div className="exec-label">
             Codex専務
             <span className="exec-tag">
@@ -623,48 +737,39 @@ function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
           </div>
         </div>
 
-        {/* スタッフ */}
-        {STAFF.map((s, i) => {
+        {/* スタッフのデスク（着席して仕事。打ち合わせ中は離席） */}
+        {STAFF.map((s) => {
           const load = byRole(s.key);
           const busy = load.length > 0;
-          const top = load[0];
+          const away = meeting?.s.key === s.key;
           return (
             <div
               key={s.key}
-              className="staff"
+              className="workstation"
               data-busy={busy}
-              style={
-                {
-                  "--x": `${s.x}%`,
-                  "--y": `${s.y}%`,
-                  "--c": s.color,
-                  "--desk-dx": `${50 - s.x}%`,
-                  "--desk-dy": `${15 - s.y}%`,
-                  "--delay": `${i * 0.4}s`,
-                } as React.CSSProperties
-              }
+              style={{ "--x": `${s.x}%`, "--y": `${s.y}%`, "--c": s.color } as React.CSSProperties}
             >
-              {busy && <div className="doc">📄</div>}
-              <div className="avatar">{s.emoji}</div>
-              <div className="label">
+              <div className="ws-desk">
+                <span className="monitor">💻</span>
+              </div>
+              {away ? (
+                <div className="person chair">🪑</div>
+              ) : (
+                <div className={`person seated ${busy ? "working" : ""}`}>
+                  <PixelChar hair={s.hair} shirt={s.color} size={38} />
+                </div>
+              )}
+              <div className="ws-label">
                 {s.name}
                 <span className="role-tag">{s.role}</span>
               </div>
               <div className={`load ${busy ? "" : "zero"}`}>{load.length}</div>
-              {busy && (
-                <button className="speech" onClick={() => onOpenItem(top.id)}>
-                  {s.line}
-                  <span className="speech-sub">
-                    {top.project_label || top.project}
-                  </span>
-                </button>
-              )}
             </div>
           );
         })}
       </div>
       <p className="office-foot">
-        AIスタッフが下書きを作り、書類を社長デスクへ運びます。高リスクはCodex専務がクロスチェック。社長は判断・承認だけ。（5秒ごと更新）
+        社員はデスクで下書きを作り、順番に社長デスクへ来て相談します。高リスクはCodex専務がクロスチェック。社長は判断・承認だけ。（更新中）
       </p>
     </div>
   );

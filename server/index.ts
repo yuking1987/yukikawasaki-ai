@@ -19,6 +19,7 @@ import {
   updateStatus,
   saveRuleCandidate,
   setSnooze,
+  answerAsk,
   canTransition,
   appendMemory,
   extractDraft,
@@ -221,6 +222,18 @@ app.patch(
       });
     }
     res.json({ ok: true, applied });
+  })
+);
+
+// --- AI→人間への依頼(ask)へ回答 ---
+app.patch(
+  "/api/items/:id/asks/:askId",
+  h(async (req, res) => {
+    const answer = String(req.body?.answer ?? "").trim();
+    if (!answer) return res.status(400).json({ error: "回答が空です" });
+    const r = await answerAsk(req.params.id, req.params.askId, answer);
+    if (!r.ok) return res.status(r.code).json({ error: r.msg });
+    res.json({ ok: true });
   })
 );
 
@@ -472,6 +485,7 @@ function buildFrontmatter(
     thread_last_id:
       typeof b.thread_last_id === "string" ? b.thread_last_id : undefined,
     thread_updated: b.thread_updated === true ? true : undefined,
+    asks: Array.isArray(b.asks) ? (b.asks as ItemFrontmatter["asks"]) : undefined,
     reviewed_by: REVIEWED_BY.includes(b.reviewed_by as never)
       ? (b.reviewed_by as ItemFrontmatter["reviewed_by"])
       : undefined,

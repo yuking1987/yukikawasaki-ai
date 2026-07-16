@@ -118,6 +118,16 @@ export type ReviewedBy = (typeof REVIEWED_BY)[number];
 export const REVIEW_STATUSES = ["none", "passed", "changes_requested"] as const;
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 
+/** AI→人間への依頼。kind=decision(方針を仰ぐ) / investigation(調査・作業のお願い)。 */
+export interface Ask {
+  id: string;
+  kind: "decision" | "investigation";
+  question: string;
+  options?: string[]; // decision時の選択肢（任意）。GUIでボタン化。
+  answer?: string; // 人間の回答/報告
+  resolved?: boolean;
+}
+
 /** アイテムのfrontmatter（管理情報）。本文はMarkdown側。 */
 export interface ItemFrontmatter {
   id: string;
@@ -144,6 +154,7 @@ export interface ItemFrontmatter {
   thread_key?: string; // メールスレッドの識別キー（正規化件名）。送信済み検知での自動クローズに使う。
   thread_last_id?: string; // スレッド最新メッセージのID。新着検知（リビング・カード）に使う。
   thread_updated?: boolean; // 取り込み後にスレッドへ新着があった印。GUIで「🔄新着あり」を表示。
+  asks?: Ask[]; // AI→人間への依頼（方針を仰ぐ／調査・作業のお願い）。GUIで回答。
   // 蒸留提案のときの出典情報
   distill_source?: Source;
   distill_date_range?: string;

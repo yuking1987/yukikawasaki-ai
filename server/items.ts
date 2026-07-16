@@ -158,6 +158,39 @@ export async function updateStatus(
   return { ok: true };
 }
 
+/** AI→人間への依頼(ask)に回答する。回答を保存し、判断は記憶へ蓄積（学習）。 */
+export async function answerAsk(
+  id: string,
+  askId: string,
+  answer: string
+): Promise<{ ok: true } | { ok: false; code: number; msg: string }> {
+  const current = await readItem(id);
+  if (!current) return { ok: false, code: 404, msg: "見つかりません" };
+  const asks = Array.isArray(current.asks) ? [...current.asks] : [];
+  const idx = asks.findIndex((a) => a.id === askId);
+  if (idx === -1) return { ok: false, code: 404, msg: "依頼が見つかりません" };
+  asks[idx] = { ...asks[idx], answer, resolved: true };
+  const { body, ...fm } = current;
+  const next: ItemFrontmatter = { ...fm, asks, updatedAt: new Date().toISOString() };
+  await fsp.writeFile(
+    path.join(itemsDir(), `${id}.md`),
+    matter.stringify(body, fmData(next as unknown as Record<string, unknown>)),
+    "utf8"
+  );
+  // 人間の判断/報告は学びとして記憶（次回の草案精度に効く）
+  await appendMemory({
+    action: "revision",
+    id: current.id,
+    project: current.project,
+    audience: current.audience,
+    type: current.type,
+    assignee: current.assignee,
+    note: `【依頼への回答】Q: ${asks[idx].question}\nA: ${answer}`,
+  });
+  await appendHistory(id, "ask-answered", askId);
+  return { ok: true };
+}
+
 /** スルー（後で）: snooze_until を設定/解除（body・statusは変えない）。 */
 export async function setSnooze(
   id: string,

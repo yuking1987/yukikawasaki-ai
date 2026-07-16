@@ -10,6 +10,7 @@ import {
   AUDIENCES,
   STATUSES,
   type ItemFrontmatter,
+  type Ask,
 } from "../shared/roles.ts";
 import { NewDraftModal } from "./NewDraftModal.tsx";
 
@@ -235,6 +236,9 @@ function ItemList({
             <SourceBadge source={it.source} />
             <StatusBadge status={it.status} />
             {it.thread_updated && <span className="badge newmsg">🔄 新着</span>}
+            {(it.asks || []).some((a) => !a.resolved) && (
+              <span className="badge askbadge">🙋 確認</span>
+            )}
             {it.importance === "high" && <span className="badge high">重要</span>}
             <span className="badge audience">{AUDIENCE_LABELS[it.audience]}</span>
           </div>
@@ -519,6 +523,102 @@ function draftText(body: string): string | null {
   return s ? s.content.trim() : null;
 }
 
+// AI→人間への依頼(ask)を1件表示。方針を仰ぐ/調査依頼をGUIで受け答え。
+function AskItem({
+  itemId,
+  ask,
+  onAnswered,
+}: {
+  itemId: string;
+  ask: Ask;
+  onAnswered: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (val: string) => {
+    if (!val.trim()) return;
+    setBusy(true);
+    try {
+      await api.answerAsk(itemId, ask.id, val.trim());
+      onAnswered();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const tag = ask.kind === "decision" ? "🧭 方針の確認" : "🔍 調査・作業のお願い";
+  if (ask.resolved)
+    return (
+      <div className="ask resolved">
+        <div className="ask-q">
+          <span className="ask-tag">{tag}</span>
+          {ask.question}
+        </div>
+        <div className="ask-a">✓ 回答：{ask.answer}</div>
+      </div>
+    );
+  return (
+    <div className={`ask ${ask.kind}`}>
+      <div className="ask-q">
+        <span className="ask-tag">{tag}</span>
+        {ask.question}
+      </div>
+      {ask.options && ask.options.length > 0 && (
+        <div className="ask-options">
+          {ask.options.map((o) => (
+            <button key={o} className="btn sm" disabled={busy} onClick={() => submit(o)}>
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="ask-input">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={ask.kind === "decision" ? "方針を入力…" : "確認結果・報告を入力…"}
+          onKeyDown={(e) => e.key === "Enter" && submit(text)}
+        />
+        <button className="btn primary sm" disabled={busy || !text.trim()} onClick={() => submit(text)}>
+          回答
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AsksPanel({
+  itemId,
+  asks,
+  onAnswered,
+}: {
+  itemId: string;
+  asks?: Ask[];
+  onAnswered: () => void;
+}) {
+  if (!asks || asks.length === 0) return null;
+  const open = asks.filter((a) => !a.resolved).length;
+  return (
+    <div className="asks-panel">
+      <div className="asks-head">
+        🙋 AIからの確認・依頼
+        {open > 0 ? (
+          <span className="asks-count">未回答 {open}</span>
+        ) : (
+          <span className="asks-done">すべて回答済み</span>
+        )}
+      </div>
+      {asks.map((a) => (
+        <AskItem key={a.id} itemId={itemId} ask={a} onAnswered={onAnswered} />
+      ))}
+      {open === 0 && (
+        <p className="asks-foot">
+          回答が揃いました。Claude Codeに「回答ぶんを反映して再ドラフト」とご依頼ください。
+        </p>
+      )}
+    </div>
+  );
+}
+
 function DetailPanel({
   id,
   onChanged,
@@ -748,6 +848,15 @@ function DetailPanel({
           再作成が必要なら Claude Code に「新着ぶんを再ドラフトして」とご依頼ください。
         </div>
       )}
+
+      <AsksPanel
+        itemId={item.id}
+        asks={item.asks}
+        onAnswered={() => {
+          load();
+          onChanged();
+        }}
+      />
 
       <div className="actions">
         {item.status === "pending" && (

@@ -63,6 +63,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ until }),
     }),
+  answerAsk: (id: string, askId: string, answer: string) =>
+    req<{ ok: true }>(`/api/items/${id}/asks/${askId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ answer }),
+    }),
   getContext: (refs: string[]) =>
     req<{ contexts: { ref: string; content?: string; error?: string }[] }>(
       `/api/context?refs=${encodeURIComponent(refs.join(","))}`

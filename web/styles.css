@@ -118,6 +118,7 @@ body {
 .badge.status.rejected { background: #2a1418; color: var(--red); border-color: #6b2530; }
 .badge.status.revision { background: #1f1730; color: #cda8f0; border-color: #4a3570; }
 .badge.status.done { background: #14201a; color: #8fc9a8; border-color: #2a4a38; }
+.badge.newmsg { background: #2a1d0f; color: #f0b866; border-color: #6b4a1f; font-weight: 700; }
 .badge.audience { background: #172033; color: #bcd4ff; }
 .badge.high, .badge.imp-high { background: #331414; color: #ffb4b4; border-color: #6b2020; }
 .badge.imp-low { color: var(--muted); }

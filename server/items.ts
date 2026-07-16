@@ -118,6 +118,7 @@ export async function updateItemBody(
   const nextFm: ItemFrontmatter = {
     ...fm,
     ...patch,
+    thread_updated: false, // 編集＝最新に追いついた印
     updatedAt: new Date().toISOString(),
   };
   const file = path.join(itemsDir(), `${id}.md`);
@@ -147,6 +148,7 @@ export async function updateStatus(
   const nextFm: ItemFrontmatter = {
     ...fm,
     status,
+    thread_updated: false, // 対応＝新着を確認済み
     updatedAt: new Date().toISOString(),
   };
   const file = path.join(itemsDir(), `${id}.md`);
@@ -373,6 +375,45 @@ export async function appendReplyExample(rec: {
   entry += `### 川崎さんの実際の返信（正例）\n${rec.reply.trim()}\n`;
   await fsp.appendFile(file, entry, "utf8");
   return { recorded: true };
+}
+
+/**
+ * リビング・カード: スレッド（## 元メッセージ）を最新に差し替え、新着フラグを立てる。
+ * ドラフト/メモ等の他セクションと、ユーザーの状態(status)は保持する。
+ */
+export async function updateThread(
+  id: string,
+  threadText: string,
+  lastId: string
+): Promise<{ ok: boolean }> {
+  const item = await readItem(id);
+  if (!item) return { ok: false };
+  const body = item.body;
+  const marker = "## 元メッセージ";
+  const start = body.indexOf(marker);
+  let newBody: string;
+  const section = `${marker}\n${threadText.trim()}\n`;
+  if (start === -1) {
+    newBody = `${section}\n${body}`;
+  } else {
+    const rest = body.indexOf("\n## ", start + marker.length);
+    newBody =
+      body.slice(0, start) + section + (rest === -1 ? "" : "\n" + body.slice(rest + 1));
+  }
+  const { body: _b, ...fm } = item;
+  const next: ItemFrontmatter = {
+    ...fm,
+    thread_last_id: lastId,
+    thread_updated: true,
+    updatedAt: new Date().toISOString(),
+  };
+  await fsp.writeFile(
+    path.join(itemsDir(), `${id}.md`),
+    matter.stringify(newBody, fmData(next as unknown as Record<string, unknown>)),
+    "utf8"
+  );
+  await appendHistory(id, "thread-updated", lastId);
+  return { ok: true };
 }
 
 /** '## ドラフト' セクションの本文だけを取り出す（記憶の差分記録・コピー用）。無ければ空文字。 */

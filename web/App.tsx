@@ -234,6 +234,7 @@ function ItemList({
           <div className="card-top">
             <SourceBadge source={it.source} />
             <StatusBadge status={it.status} />
+            {it.thread_updated && <span className="badge newmsg">🔄 新着</span>}
             {it.importance === "high" && <span className="badge high">重要</span>}
             <span className="badge audience">{AUDIENCE_LABELS[it.audience]}</span>
           </div>
@@ -738,6 +739,13 @@ function DetailPanel({
       {snoozed && (
         <div className="banner info">
           ⏰ スルー中（{item.snooze_until?.slice(0, 10)} に承認待ちへ自動復活）。
+        </div>
+      )}
+
+      {item.thread_updated && (
+        <div className="banner warn">
+          🔄 スレッドに新着があります。「こう来た」は最新ですが、下の草案は新着前のものかもしれません。
+          再作成が必要なら Claude Code に「新着ぶんを再ドラフトして」とご依頼ください。
         </div>
       )}
 

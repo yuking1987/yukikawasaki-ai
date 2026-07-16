@@ -142,6 +142,8 @@ export interface ItemFrontmatter {
   applied_at?: string; // 蒸留提案を反映した日時。二重反映を防ぐ冪等マーカー。
   snooze_until?: string; // スルー（後で）。この日時までは承認待ち一覧から隠し、過ぎたら自動復活。
   thread_key?: string; // メールスレッドの識別キー（正規化件名）。送信済み検知での自動クローズに使う。
+  thread_last_id?: string; // スレッド最新メッセージのID。新着検知（リビング・カード）に使う。
+  thread_updated?: boolean; // 取り込み後にスレッドへ新着があった印。GUIで「🔄新着あり」を表示。
   // 蒸留提案のときの出典情報
   distill_source?: Source;
   distill_date_range?: string;

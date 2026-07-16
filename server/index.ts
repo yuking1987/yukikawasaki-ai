@@ -469,6 +469,9 @@ function buildFrontmatter(
       typeof b.apply_target === "string" ? b.apply_target : undefined,
     source_ref: typeof b.source_ref === "string" ? b.source_ref : undefined,
     thread_key: typeof b.thread_key === "string" ? b.thread_key : undefined,
+    thread_last_id:
+      typeof b.thread_last_id === "string" ? b.thread_last_id : undefined,
+    thread_updated: b.thread_updated === true ? true : undefined,
     reviewed_by: REVIEWED_BY.includes(b.reviewed_by as never)
       ? (b.reviewed_by as ItemFrontmatter["reviewed_by"])
       : undefined,

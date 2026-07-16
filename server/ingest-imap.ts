@@ -5,6 +5,7 @@ import {
   createItem,
   listItems,
   updateStatus,
+  updateThread,
   appendReplyExample,
 } from "./items.ts";
 import type { ItemFrontmatter } from "../shared/roles.ts";
@@ -141,6 +142,7 @@ async function main() {
   let needReply = 0,
     handled = 0,
     written = 0,
+    updated = 0,
     learned = 0,
     closed = 0;
   const list: { subject: string; last: string; count: number; date: string }[] = [];
@@ -178,13 +180,25 @@ async function main() {
     needReply++;
     list.push({ subject: last.subject, last: `${last.fromName} <${last.from}>`, count: arr.length, date: last.date.slice(0, 10) });
     if (WRITE) {
-      // 同じスレッドの項目が既にあれば作らない（ステータス問わず・重複防止）
-      if (existing.some((it) => it.thread_key === key)) continue;
-      const id = `mail-${last.date.slice(0, 10)}-${sanitizeId(last.messageId || last.subject)}`;
       const thread = arr
         .map((m) => `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${cleanBody(m.text) || "（本文なし）"}`)
         .join("\n\n---\n\n");
-      const body = `## 元メッセージ\n件名: ${last.subject}\n\n${thread}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
+      const threadSection = `件名: ${last.subject}\n\n${thread}`;
+      const match = existing.find((it) => it.thread_key === key);
+      if (match) {
+        // 既存カード: 新着があればスレッドを最新に更新（done/rejected は触らない）。
+        if (
+          match.status !== "done" &&
+          match.status !== "rejected" &&
+          match.thread_last_id !== last.messageId
+        ) {
+          await updateThread(match.id, threadSection, last.messageId);
+          updated++;
+        }
+        continue;
+      }
+      const id = `mail-${last.date.slice(0, 10)}-${sanitizeId(last.messageId || last.subject)}`;
+      const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
       const fm: ItemFrontmatter = {
         id,
         source: "gmail",
@@ -196,6 +210,7 @@ async function main() {
         createdAt: last.date,
         importance: "normal",
         thread_key: key,
+        thread_last_id: last.messageId,
       };
       const r = await createItem(fm, body);
       if (r.ok) written++;
@@ -211,7 +226,7 @@ async function main() {
     .forEach((t, i) => console.log(`${String(i + 1).padStart(2)}. ${t.date} [${t.count}通] ${t.subject}  ← ${t.last}`));
   if (WRITE)
     console.log(
-      `\n[imap] 下書き作成 ${written} 件 / 正例(あなたの返信)学習 ${learned} 件 / 自動クローズ ${closed} 件`
+      `\n[imap] 新規 ${written} / スレッド更新 ${updated} / 正例学習 ${learned} / 自動クローズ ${closed} 件`
     );
   else console.log(`\n（ドライラン。項目化＋正例学習するには: npm run ingest:mail -- --write）`);
 }

@@ -18,3 +18,6 @@ secrets/
 # OS/エディタ
 .DS_Store
 *.log
+
+# 定期実行ログ
+ops/logs/

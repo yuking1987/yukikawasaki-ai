@@ -99,6 +99,18 @@ export const api = {
     req<{ ok: boolean; already?: boolean }>(`/api/items/${id}/generate`, {
       method: "POST",
     }),
+  // Asanaへコメント投稿（社内のやり取り。訂正可能）
+  postAsanaComment: (id: string, text: string, expectedThreadLastId?: string) =>
+    req<{ ok: true }>(`/api/items/${id}/post-comment`, {
+      method: "POST",
+      body: JSON.stringify({ text, expected_thread_last_id: expectedThreadLastId ?? "" }),
+    }),
+  // メール返信の下書きをIMAPに作成（送信はしない）
+  mailDraft: (id: string, text: string, to?: string) =>
+    req<{ ok: true; box: string; to: string; subject: string }>(
+      `/api/items/${id}/mail-draft`,
+      { method: "POST", body: JSON.stringify({ text, to }) }
+    ),
   triage: (type: string, text: string) =>
     req<{ assignee: string; importance: string }>(`/api/triage`, {
       method: "POST",

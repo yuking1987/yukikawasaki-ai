@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { appendDraft } from "./mail-draft.ts";
 import matter from "gray-matter";
 import {
   VAULT_PATH,
@@ -427,6 +428,85 @@ app.get(
       }
     }
     res.json({ slug, pointer, cache });
+  })
+);
+
+// ============================================================
+// 「出す」系（人間のクリックからのみ呼ぶ。AI・cronからは絶対に呼ばない）
+//  - Asanaコメント投稿：社内のやり取り。間違えても追いコメントで訂正できる。
+//  - メール下書き作成：IMAPの下書きに置くだけ。送信は人間がメール画面で行う＝取り返しがつく。
+//    （クライアントへの直接送信は、取り消せないため意図的に実装しない）
+// ============================================================
+
+// --- Asanaへコメント投稿（＋投稿できたら対応済みにする） ---
+app.post(
+  "/api/items/:id/post-comment",
+  h(async (req, res) => {
+    const item = await readItem(req.params.id);
+    if (!item) return res.status(404).json({ error: "見つかりません" });
+    if (item.source !== "asana")
+      return res.status(400).json({ error: "Asanaのカードではありません。" });
+    const gid =
+      String(item.thread_key || "").replace(/^asana:/, "") ||
+      item.id.replace(/^asana-/, "");
+    if (!/^\d+$/.test(gid))
+      return res.status(400).json({ error: "AsanaのタスクIDが特定できません。" });
+    const text = String(req.body?.text ?? "").trim();
+    if (!text) return res.status(400).json({ error: "本文が空です。" });
+    // 新着ズレ検知：見ていたスレッドが動いていたら投稿させない
+    if ("expected_thread_last_id" in (req.body ?? {})) {
+      const exp = String(req.body.expected_thread_last_id ?? "");
+      if (exp !== String(item.thread_last_id ?? ""))
+        return res.status(409).json({
+          error: "スレッドに新着があります。最新を確認してから投稿してください。",
+          stale: true,
+        });
+    }
+    const token = process.env.ASANA_TOKEN || "";
+    if (!token) return res.status(500).json({ error: "ASANA_TOKEN が未設定です。" });
+    const r = await fetch(`https://app.asana.com/api/1.0/tasks/${gid}/stories`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { text } }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      return res.status(502).json({ error: `Asanaへの投稿に失敗 (${r.status}): ${t.slice(0, 200)}` });
+    }
+    // 投稿できた＝GB側が返信した状態。対応済みにする（遷移が許されないときは状態を変えない）。
+    if (canTransition(item.status, "done"))
+      await updateStatus(item.id, "done", "GUIからAsanaへコメントを投稿");
+    res.json({ ok: true });
+  })
+);
+
+// --- メールの返信「下書き」をIMAPに作成（送信はしない・スレッドに繋がる） ---
+app.post(
+  "/api/items/:id/mail-draft",
+  h(async (req, res) => {
+    const item = await readItem(req.params.id);
+    if (!item) return res.status(404).json({ error: "見つかりません" });
+    if (item.source !== "gmail")
+      return res.status(400).json({ error: "メールのカードではありません。" });
+    const text = String(req.body?.text ?? "").trim();
+    if (!text) return res.status(400).json({ error: "本文が空です。" });
+    // 宛先：frontmatterのreply_to優先。無ければGUIから渡された宛先を使う。
+    const to = String(req.body?.to ?? item.reply_to ?? "").trim();
+    if (!to)
+      return res.status(400).json({
+        error: "返信先が不明です（このカードには宛先が保存されていません）。宛先を指定してください。",
+        needTo: true,
+      });
+    const baseSubject = String(item.reply_subject || item.title || "").trim();
+    const subject = /^re:/i.test(baseSubject) ? baseSubject : `Re: ${baseSubject}`;
+    const r = await appendDraft({
+      to,
+      subject,
+      body: text,
+      inReplyTo: item.thread_last_id,
+    });
+    if (!r.ok) return res.status(502).json({ error: `下書きの作成に失敗: ${r.msg}` });
+    res.json({ ok: true, box: r.box, to, subject });
   })
 );
 

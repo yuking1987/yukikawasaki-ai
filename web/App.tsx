@@ -44,15 +44,53 @@ const EMPTY: Filters = {
   q: "",
 };
 
+// リロード（自動更新含む）しても「いま見ていた画面」に戻れるよう、
+// 表示タブと選択中カードを localStorage に保存・復元する。
+type View = "dashboard" | "office" | "knowledge";
+const VIEWS: readonly string[] = ["dashboard", "office", "knowledge"];
+function restoreView(): View {
+  try {
+    const v = localStorage.getItem("gb.view");
+    if (v && VIEWS.includes(v)) return v as View;
+  } catch {
+    /* localStorageが使えなくても既定で動く */
+  }
+  return "dashboard";
+}
+function restoreSelectedId(): string | null {
+  try {
+    return localStorage.getItem("gb.selectedId");
+  } catch {
+    return null;
+  }
+}
+
 export function App() {
   const [items, setItems] = useState<ItemFrontmatter[]>([]);
   const [filters, setFilters] = useState<Filters>(EMPTY);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(restoreSelectedId);
   const [showNew, setShowNew] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"dashboard" | "office" | "knowledge">("dashboard");
+  const [view, setView] = useState<View>(restoreView);
   const [avatars, setAvatars] = useState<Record<string, string>>({});
+
+  // 画面状態を保存（リロード後に同じタブ・同じカードへ復帰する）
+  useEffect(() => {
+    try {
+      localStorage.setItem("gb.view", view);
+    } catch {
+      /* 保存できなくても動作に影響しない */
+    }
+  }, [view]);
+  useEffect(() => {
+    try {
+      if (selectedId) localStorage.setItem("gb.selectedId", selectedId);
+      else localStorage.removeItem("gb.selectedId");
+    } catch {
+      /* 同上 */
+    }
+  }, [selectedId]);
 
   // メンバーのプロフィール画像を一度だけ取得（スレッドのアバター表示用）
   useEffect(() => {
@@ -1208,6 +1246,8 @@ function BodySections({
   startedAt,
   onGenerate,
   busy,
+  draftActions,
+  draftEditor,
 }: {
   body: string;
   source: ItemFrontmatter["source"];
@@ -1215,6 +1255,8 @@ function BodySections({
   startedAt?: string;
   onGenerate?: () => void;
   busy?: boolean;
+  draftActions?: ReactNode; // 「こう返しては？」見出しの右に置く操作（コピー/修正）
+  draftEditor?: ReactNode; // 編集中はドラフト本文の代わりに表示する入力欄
 }) {
   // 人間には不要なセクションはGUIでは非表示（ファイルには残る＝AIの学習・履歴用）。
   // 「状況分析（AIの読み）」／過去の「却下理由」は画面に出さない。
@@ -1244,17 +1286,22 @@ function BodySections({
             <div className="section-label">
               <span className="section-icon">{meta.icon}</span>
               {label}
+              {meta.kind === "outgoing" && draftActions ? (
+                <span className="section-actions">{draftActions}</span>
+              ) : null}
             </div>
             {meta.kind === "incoming" ? (
               <ThreadView content={s.content} />
             ) : meta.kind === "outgoing" ? (
-              <DraftSection
-                content={s.content}
-                draftStatus={draftStatus}
-                startedAt={startedAt}
-                onGenerate={onGenerate}
-                busy={busy}
-              />
+              draftEditor ?? (
+                <DraftSection
+                  content={s.content}
+                  draftStatus={draftStatus}
+                  startedAt={startedAt}
+                  onGenerate={onGenerate}
+                  busy={busy}
+                />
+              )
             ) : (
               <SimpleMarkdown text={s.content} />
             )}
@@ -1346,6 +1393,29 @@ function DraftSection({
 function draftText(body: string): string | null {
   const s = parseSections(body).find((x) => metaFor(x.rawTitle).kind === "outgoing");
   return s ? s.content.trim() : null;
+}
+
+/**
+ * 「ドラフト（こう返しては？）」セクションの中身だけを差し替えた本文を返す。
+ * 見出し行とその他のセクション（元メッセージ等）はそのまま保持する。
+ */
+function replaceDraftSection(body: string, next: string): string {
+  const lines = body.split("\n");
+  const start = lines.findIndex((l) => {
+    const m = l.match(/^##\s+(.+?)\s*$/);
+    return !!m && metaFor(m[1].trim()).kind === "outgoing";
+  });
+  if (start === -1) return body; // ドラフト節が無ければ触らない
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s+/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return [...lines.slice(0, start + 1), next.trim(), "", ...lines.slice(end)]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 // ドット絵キャラ（自己完結SVGスプライト・外部画像なし）。flipで左右反転＝向かい合い表現。
@@ -1693,23 +1763,31 @@ function DetailPanel({
 }) {
   const [item, setItem] = useState<ItemFull | null>(null);
   const [editing, setEditing] = useState(false);
+  const [notFound, setNotFound] = useState(false); // 復元した選択カードが存在しないとき
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   // ボタン近くに出すインライン入力欄（却下理由 / 再考コメント / 学び候補 / スルー日付）
   const [panelMode, setPanelMode] = useState<
-    "reject" | "learn" | "revision" | "snooze" | null
+    "reject" | "learn" | "revision" | "snooze" | "post" | null
   >(null);
   const [inputText, setInputText] = useState("");
 
   const load = useCallback(async () => {
     if (!id) return setItem(null);
-    const { item } = await api.getItem(id);
-    setItem(item);
-    setDraft(item.body);
-    setEditing(false);
-    setPanelMode(null);
-    setInputText("");
+    try {
+      const { item } = await api.getItem(id);
+      setItem(item);
+      setNotFound(false);
+      setDraft(draftText(item.body) ?? ""); // 修正対象は「こう返しては？」の文だけ
+      setEditing(false);
+      setPanelMode(null);
+      setInputText("");
+    } catch {
+      // リロードで復元した選択カードが既に無い場合など。読み込み中のまま固まらせない。
+      setItem(null);
+      setNotFound(true);
+    }
   }, [id]);
 
   useEffect(() => {
@@ -1726,7 +1804,7 @@ function DetailPanel({
       try {
         const { item: fresh } = await api.getItem(id);
         setItem(fresh);
-        setDraft(fresh.body);
+        setDraft(draftText(fresh.body) ?? "");
       } catch {
         /* ネットワーク一時失敗は無視 */
       }
@@ -1735,6 +1813,15 @@ function DetailPanel({
   }, [id, editing, panelMode, busy]);
 
   if (!id) return <div className="detail empty">左の一覧から選択してください。</div>;
+  if (notFound)
+    return (
+      <div className="detail empty">
+        このカードは見つかりませんでした（対応済みで整理された等）。
+        <button className="btn ghost sm" onClick={onClose}>
+          閉じる
+        </button>
+      </div>
+    );
   if (!item) return <div className="detail">読み込み中…</div>;
 
   const snoozed =
@@ -1755,13 +1842,15 @@ function DetailPanel({
     }
   };
 
-  const openPanel = (mode: "reject" | "learn" | "revision" | "snooze") => {
+  const openPanel = (mode: "reject" | "learn" | "revision" | "snooze" | "post") => {
     const opening = panelMode !== mode;
     setPanelMode(opening ? mode : null);
     // スルーは日付入力。既定は30日後。
     if (opening && mode === "snooze") {
       const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
       setInputText(d.toISOString().slice(0, 10));
+    } else if (opening && mode === "post") {
+      setInputText(item.reply_to || ""); // メールの宛先（保存済みなら初期表示）
     } else {
       setInputText("");
     }
@@ -1801,14 +1890,27 @@ function DetailPanel({
     }, "承認待ちへ差し戻しました。");
   const saveEdit = () =>
     act(async () => {
-      await api.updateBody(item.id, draft);
-    }, "本文を修正しました（旧版はバックアップ済み）。");
+      // 「こう返しては？」の文だけを差し替える（元メッセージ等の他セクションは保持）
+      await api.updateBody(item.id, replaceDraftSection(item.body, draft));
+    }, "返信文を修正しました（旧版はバックアップ済み）。");
   const generate = () =>
     act(async () => {
       const r = await api.generateDraft(item.id);
       if (r.already) return "すでに生成中です。";
       return "草案の生成を開始しました（生成中…）。";
     }, "生成を開始しました。");
+  // Asanaへコメント投稿（社内・訂正可）／メールは下書き作成のみ（送信はしない）
+  const confirmPost = () =>
+    act(async () => {
+      const d = draftText(item.body);
+      if (!d) throw new Error("ドラフトがありません。");
+      if (item.source === "asana") {
+        await api.postAsanaComment(item.id, d, item.thread_last_id ?? "");
+        return "Asanaにコメントを投稿し、対応済みにしました。";
+      }
+      const r = await api.mailDraft(item.id, d, inputText.trim() || undefined);
+      return `下書きを作成しました（${r.box}／宛先: ${r.to}）。送信はメール画面で行ってください。`;
+    }, "実行しました。");
   const confirmLearn = () => {
     const cid = `${item.id}-learn-${Date.now()}`;
     act(async () => {
@@ -1873,47 +1975,57 @@ function DetailPanel({
       <div className="body-section">
         <div className="body-head">
           <h3>やり取り</h3>
-          {!editing ? (
-            <div className="body-actions">
-              <button className="btn ghost sm" onClick={copyBody}>
-                返信文をコピー
-              </button>
-              <button className="btn ghost sm" onClick={() => setEditing(true)}>
-                修正
-              </button>
-            </div>
-          ) : (
-            <div className="body-actions">
-              <button className="btn sm" onClick={() => { setEditing(false); setDraft(item.body); }}>
-                取消
-              </button>
-              <button className="btn primary sm" disabled={busy} onClick={saveEdit}>
-                保存
-              </button>
-            </div>
-          )}
         </div>
-        {!editing ? (
-          <BodySections
-            body={item.body}
-            source={item.source}
-            draftStatus={item.draft_status}
-            startedAt={item.draft_started_at}
-            onGenerate={generate}
-            busy={busy}
-          />
-        ) : (
-          <>
-            <p className="edit-hint">
-              Markdownで編集できます（<code>## 元メッセージ</code> / <code>## ドラフト</code> の見出しで区切ると整形表示されます）。
-            </p>
-            <textarea
-              className="body-edit"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            />
-          </>
-        )}
+        <BodySections
+          body={item.body}
+          source={item.source}
+          draftStatus={item.draft_status}
+          startedAt={item.draft_started_at}
+          onGenerate={generate}
+          busy={busy}
+          draftActions={
+            !editing ? (
+              <>
+                <button className="btn ghost sm" onClick={copyBody}>
+                  返信文をコピー
+                </button>
+                <button
+                  className="btn ghost sm"
+                  onClick={() => {
+                    setDraft(draftText(item.body) ?? "");
+                    setEditing(true);
+                  }}
+                >
+                  修正
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="btn sm"
+                  onClick={() => {
+                    setEditing(false);
+                    setDraft(draftText(item.body) ?? "");
+                  }}
+                >
+                  取消
+                </button>
+                <button className="btn primary sm" disabled={busy} onClick={saveEdit}>
+                  保存
+                </button>
+              </>
+            )
+          }
+          draftEditor={
+            editing ? (
+              <textarea
+                className="body-edit draft-edit"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+            ) : undefined
+          }
+        />
       </div>
 
       {msg && <div className="banner info">{msg}</div>}
@@ -1953,6 +2065,21 @@ function DetailPanel({
             <button className="btn approve" disabled={busy} onClick={approve}>
               ✓ 承認
             </button>
+            {(item.source === "asana" || item.source === "gmail") &&
+              !!draftText(item.body) && (
+                <button
+                  className={`btn primary ${panelMode === "post" ? "on" : ""}`}
+                  disabled={busy}
+                  onClick={() => openPanel("post")}
+                  title={
+                    item.source === "asana"
+                      ? "この草案をAsanaにコメントとして投稿します（社内。あとから訂正できます）"
+                      : "この草案をメールの下書きに作ります。送信はしません（送信はメール画面で）"
+                  }
+                >
+                  {item.source === "asana" ? "📤 Asanaに投稿" : "✉️ 下書きを作成"}
+                </button>
+              )}
             <button
               className={`btn revision ${panelMode === "revision" ? "on" : ""}`}
               disabled={busy}
@@ -1998,6 +2125,45 @@ function DetailPanel({
           ★ 学び候補として保存
         </button>
       </div>
+
+      {panelMode === "post" && (
+        <div className="inline-panel post">
+          <label>
+            {item.source === "asana"
+              ? "この内容でAsanaにコメントします（社内のやり取り。あとから訂正コメントも出せます）"
+              : "この内容でメールの下書きを作ります。送信はしません（最後の送信はメール画面で）"}
+          </label>
+          {item.source === "gmail" && (
+            <>
+              <div className="post-to">
+                <span>宛先{item.reply_to ? "" : "（このカードには未保存。確認して入力してください）"}</span>
+                <input
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  placeholder="例: 山田太郎 <yamada@example.com>"
+                />
+              </div>
+              <div className="post-meta">
+                件名: Re: {item.reply_subject || item.title}
+                {item.thread_last_id ? "／同じスレッドに繋がります" : "／新規スレッドになります"}
+              </div>
+            </>
+          )}
+          <pre className="post-preview">{draftText(item.body)}</pre>
+          <div className="inline-actions">
+            <button className="btn ghost sm" onClick={() => setPanelMode(null)}>
+              やめる
+            </button>
+            <button
+              className="btn primary sm"
+              disabled={busy || (item.source === "gmail" && !inputText.trim())}
+              onClick={confirmPost}
+            >
+              {item.source === "asana" ? "投稿する" : "下書きを作る"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {panelMode === "reject" && (
         <div className="inline-panel reject">

@@ -9,6 +9,7 @@ export interface ReferenceMeta {
   kind: string;
   title: string;
   last_synced?: string;
+  updated?: string;
   stale: boolean;
 }
 

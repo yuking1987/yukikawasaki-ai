@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -878,21 +879,43 @@ function ReferencePanel() {
   useEffect(() => {
     api.listReferences().then((r) => setRefs(r.references)).catch(() => {});
   }, []);
+  // ローカル原本を上、外部同期を下にまとめる（各グループ内はタイトル順）
+  const sorted = useMemo(() => {
+    const rank = (r: ReferenceMeta) => (r.kind === "local" ? 0 : 1);
+    return [...refs].sort(
+      (a, b) => rank(a) - rank(b) || String(a.title).localeCompare(String(b.title), "ja")
+    );
+  }, [refs]);
   if (refs.length === 0) return null;
+  const firstExternal = sorted.findIndex((r) => r.kind !== "local");
   return (
     <div className="ref-panel">
-      <h3>参照資料（外部が正・キャッシュ）</h3>
+      <h3>参照資料</h3>
       <ul>
-        {refs.map((r) => (
-          <li key={r.slug} className="ref-item">
-            <span className="ref-title">{r.title}</span>
-            <span className="ref-kind">{r.kind}</span>
-            {r.stale ? (
-              <span className="ref-stale">⚠ 要確認{r.last_synced ? "" : "（未取得）"}</span>
-            ) : (
-              <span className="ref-fresh">最終取得: {r.last_synced?.slice(0, 10)}</span>
+        {sorted.map((r, i) => (
+          <Fragment key={r.slug}>
+            {i === 0 && r.kind === "local" && (
+              <li className="ref-group">ローカル原本（同期不要）</li>
             )}
-          </li>
+            {i === firstExternal && firstExternal > 0 && (
+              <li className="ref-group">外部同期（外部が正・キャッシュ）</li>
+            )}
+            <li className="ref-item">
+              <span className="ref-title">{r.title}</span>
+              <span className="ref-kind">{r.kind === "local" ? "ローカル" : r.kind}</span>
+              {r.kind === "local" ? (
+                <span className="ref-local">
+                  {r.updated ? `更新: ${r.updated}` : "原本"}
+                </span>
+              ) : r.stale || !r.last_synced ? (
+                <span className="ref-stale">
+                  ⚠ 要確認{r.last_synced ? `（${r.last_synced.slice(0, 10)}）` : "（未取得）"}
+                </span>
+              ) : (
+                <span className="ref-fresh">最終取得: {r.last_synced.slice(0, 10)}</span>
+              )}
+            </li>
+          </Fragment>
         ))}
       </ul>
     </div>

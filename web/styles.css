@@ -264,6 +264,7 @@ svg.src-ico { width: 13px; height: 13px; display: inline-block; vertical-align: 
 .ref-kind { color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
 .ref-stale { color: var(--amber); }
 .ref-fresh { color: var(--muted); }
+.ref-local { color: var(--green); }
 
 /* detail */
 .detail { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; min-height: 0; overflow-y: auto; }
@@ -442,3 +443,7 @@ img.tv-avatar { object-fit: cover; background: var(--panel-2); }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; vertical-align: top; }
 .md thead th { background: var(--panel-2); position: sticky; top: 0; }
 .md tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+
+/* 参照パネル：グループ見出し（ローカル/外部） */
+.ref-group { list-style: none; margin: 8px 0 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted); text-transform: none; }
+.ref-group:first-child { margin-top: 0; }

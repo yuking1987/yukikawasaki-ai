@@ -365,13 +365,36 @@ app.get(
       try {
         const parsed = matter(await fsp.readFile(abs, "utf8"));
         const d = parsed.data as Record<string, unknown>;
-        const lastSynced = d.last_synced ? String(d.last_synced) : undefined;
+        // YAMLは `2026-07-16`(クォート無し)をDateにするので、必ずISO(YYYY-MM-DD)へ正規化。
+        const fmtDate = (v: unknown): string | undefined =>
+          !v
+            ? undefined
+            : v instanceof Date
+            ? v.toISOString().slice(0, 10)
+            : String(v).slice(0, 10);
+        const lastSynced = fmtDate(d.last_synced);
+        // 「ローカル原本」は kind:local を明示条件にする（source_id の有無では判定しない）。
+        // これにより、外部種別(notion/gsheet/gdrive)なのに source_id を書き忘れた資料が
+        // 「原本（同期不要）」へ誤分類されず、鮮度警告（未取得）として拾える。
+        const kind = d.kind ? String(d.kind) : d.source_id ? "unknown" : "local";
+        const isLocal = kind === "local";
+        // ローカル原本の「更新／蒸留日」を拾う（場所が資料ごとにまちまちなので順に探す）。
+        const meta =
+          d.metadata && typeof d.metadata === "object"
+            ? (d.metadata as Record<string, unknown>)
+            : {};
+        const updated = fmtDate(
+          d.distilled ?? d.updated ?? d.synced ?? meta.distilled ?? meta.updated
+        );
         refs.push({
           slug,
-          kind: d.kind ?? "unknown",
+          kind,
           title: d.title ?? slug,
           last_synced: lastSynced,
-          stale: isStale(lastSynced, Number(d.refresh_days) || REFRESH_ALERT_DAYS),
+          updated: isLocal ? updated : undefined,
+          stale: isLocal
+            ? false
+            : isStale(lastSynced, Number(d.refresh_days) || REFRESH_ALERT_DAYS),
         });
       } catch {
         /* skip broken */

@@ -991,11 +991,24 @@ function decorate(s: string): string {
   return emojify(decodeEntities(s));
 }
 
-function inlineMd(text: string): ReactNode {
-  // エンティティ復号・絵文字化してから、URLリンク・**bold** を組み立てる（HTMLは挿入しない）
+function escapeReg(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function inlineMd(text: string, mentionNames: string[] = []): ReactNode {
+  // エンティティ復号・絵文字化してから、@メンション・URLリンク・**bold** を組み立てる（HTMLは挿入しない）
   const s = decorate(text);
-  const parts = s.split(/(https?:\/\/[^\s<>"'（）]+|\*\*[^*]+\*\*)/g);
+  // メンバー名（長い順）から @名前 の検出パターンを作る
+  const names = mentionNames.filter(Boolean).sort((a, b) => b.length - a.length);
+  const mentionAlt = names.length ? `@(?:${names.map(escapeReg).join("|")})` : null;
+  const mentionSet = new Set(names.map((n) => "@" + n));
+  const pattern = [
+    "https?:\\/\\/[^\\s<>\"'（）]+",
+    "\\*\\*[^*]+\\*\\*",
+    ...(mentionAlt ? [mentionAlt] : []),
+  ].join("|");
+  const parts = s.split(new RegExp(`(${pattern})`, "g"));
   return parts.map((p, i) => {
+    if (!p) return null;
     if (/^https?:\/\//.test(p)) {
       // 末尾の句読点・閉じ括弧はリンクから外す
       const mm = p.match(/^(.*?)([.,!?、。）)\]】]*)$/s);
@@ -1012,11 +1025,19 @@ function inlineMd(text: string): ReactNode {
     }
     if (p.startsWith("**") && p.endsWith("**"))
       return <strong key={i}>{p.slice(2, -2)}</strong>;
+    if (mentionSet.has(p))
+      return (
+        <span key={i} className="mention">
+          {p}
+        </span>
+      );
     return p;
   });
 }
 
 function SimpleMarkdown({ text }: { text: string }) {
+  const avatars = useContext(AvatarContext);
+  const mentionNames = useMemo(() => Object.keys(avatars), [avatars]);
   const blocks = text.trim().split(/\n{2,}/).filter(Boolean);
   return (
     <div className="md">
@@ -1026,7 +1047,7 @@ function SimpleMarkdown({ text }: { text: string }) {
           return (
             <ul key={i}>
               {lines.map((l, j) => (
-                <li key={j}>{inlineMd(l.replace(/^\s*[-*]\s+/, ""))}</li>
+                <li key={j}>{inlineMd(l.replace(/^\s*[-*]\s+/, ""), mentionNames)}</li>
               ))}
             </ul>
           );
@@ -1034,7 +1055,7 @@ function SimpleMarkdown({ text }: { text: string }) {
           return (
             <ol key={i}>
               {lines.map((l, j) => (
-                <li key={j}>{inlineMd(l.replace(/^\s*\d+\.\s+/, ""))}</li>
+                <li key={j}>{inlineMd(l.replace(/^\s*\d+\.\s+/, ""), mentionNames)}</li>
               ))}
             </ol>
           );
@@ -1042,7 +1063,7 @@ function SimpleMarkdown({ text }: { text: string }) {
           <p key={i}>
             {lines.map((l, j) => (
               <span key={j}>
-                {inlineMd(l)}
+                {inlineMd(l, mentionNames)}
                 {j < lines.length - 1 ? <br /> : null}
               </span>
             ))}

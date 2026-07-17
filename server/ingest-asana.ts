@@ -10,7 +10,7 @@ import {
   HIGH_IMPORTANCE_KEYWORDS,
   type ItemFrontmatter,
 } from "../shared/roles.ts";
-import { saveFromUrl, attachBlock, type AttachMeta } from "./attachments.ts";
+import { saveFromUrl, attachBlock, detailOf, type AttachMeta } from "./attachments.ts";
 
 // ============================================================
 // Asana自動取り込み（cronから動かすため MCP でなく REST API を使う）。
@@ -94,6 +94,8 @@ export async function collectAsanaAttachments(
         size: a.size || 0,
       };
       if (a.download_url) meta.rel = await saveFromUrl(itemId, name, a.download_url);
+      // Excelは中身（文字＋貼り込み画像）までほどく。修正指示は画像にあることが多いため。
+      if (meta.rel) meta.detail = await detailOf(itemId, name);
       metas.push(meta);
     }
     return attachBlock(metas);

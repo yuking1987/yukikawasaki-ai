@@ -76,6 +76,21 @@ function normalizeAsks(raw: unknown): Ask[] | undefined {
   return out.length ? out.slice(0, 20) : undefined;
 }
 
+/** 本文から「## <見出し>」セクションの中身だけ取り出す（メール引用の組み立て用）。 */
+function extractSection(body: string, head: string): string {
+  const buf: string[] = [];
+  let capturing = false;
+  for (const line of body.split("\n")) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      capturing = m[1].trim().startsWith(head);
+      continue;
+    }
+    if (capturing) buf.push(line);
+  }
+  return buf.join("\n").trim();
+}
+
 const PORT = Number(process.env.PORT || 8787);
 const HOST = "127.0.0.1"; // localhost限定。外部公開しない。
 const REFRESH_ALERT_DAYS = Number(process.env.REFRESH_ALERT_DAYS || 7);
@@ -499,10 +514,18 @@ app.post(
       });
     const baseSubject = String(item.reply_subject || item.title || "").trim();
     const subject = /^re:/i.test(baseSubject) ? baseSubject : `Re: ${baseSubject}`;
+    // これまでのやり取り（## 元メッセージ）を引用として本文末尾に付ける
+    const thread = extractSection(item.body, "元メッセージ");
+    const quoted = thread
+      ? `\n\n----- 元のメッセージ -----\n${thread
+          .split("\n")
+          .map((l) => (l.trim() ? `> ${l}` : ">"))
+          .join("\n")}`
+      : "";
     const r = await appendDraft({
       to,
       subject,
-      body: text,
+      body: `${text}${quoted}`,
       inReplyTo: item.thread_last_id,
     });
     if (!r.ok) return res.status(502).json({ error: `下書きの作成に失敗: ${r.msg}` });

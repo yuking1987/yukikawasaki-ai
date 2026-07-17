@@ -62,7 +62,10 @@ export function buildMessage(opts: {
     headers.push(`In-Reply-To: ${brackets(opts.inReplyTo)}`);
     headers.push(`References: ${opts.references || brackets(opts.inReplyTo)}`);
   }
-  const b64 = Buffer.from(opts.body, "utf8").toString("base64");
+  // 本文の改行は CRLF に正規化する。LFのままだとメールソフトによっては
+  // 改行として扱われず、全文が1段落に潰れて表示される。
+  const normalized = opts.body.replace(/\r?\n/g, "\r\n");
+  const b64 = Buffer.from(normalized, "utf8").toString("base64");
   const wrapped = b64.replace(/(.{76})/g, "$1\r\n");
   return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${wrapped}\r\n`, "utf8");
 }

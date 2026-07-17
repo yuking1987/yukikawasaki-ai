@@ -95,6 +95,10 @@ export const api = {
     ),
   listProjects: () =>
     req<{ projects: ProjectMeta[] }>(`/api/projects`),
+  generateDraft: (id: string) =>
+    req<{ ok: boolean; already?: boolean }>(`/api/items/${id}/generate`, {
+      method: "POST",
+    }),
   triage: (type: string, text: string) =>
     req<{ assignee: string; importance: string }>(`/api/triage`, {
       method: "POST",

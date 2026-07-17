@@ -447,3 +447,22 @@ img.tv-avatar { object-fit: cover; background: var(--panel-2); }
 /* 参照パネル：グループ見出し（ローカル/外部） */
 .ref-group { list-style: none; margin: 8px 0 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted); text-transform: none; }
 .ref-group:first-child { margin-top: 0; }
+
+/* ============================================================
+   打ち返し草案（こう返しては？）の生成状態表示
+   ============================================================ */
+.draft-state { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: 10px; }
+.draft-state.waiting { background: #2a2410; border: 1px solid #6b5715; color: var(--amber); flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.draft-state.error { background: #2a1418; border: 1px solid #6b2530; color: var(--red); flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.draft-state.generating { background: var(--panel-2); border: 1px solid var(--border); }
+.gen-row { display: flex; align-items: center; gap: 10px; color: var(--accent); font-size: 13px; font-weight: 600; }
+.gen-spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgba(110,168,254,.25); border-top-color: var(--accent); animation: gen-spin .7s linear infinite; flex: none; }
+@keyframes gen-spin { to { transform: rotate(360deg); } }
+/* きらめくスケルトン（生成してる感） */
+.gen-skeleton { display: flex; flex-direction: column; gap: 8px; }
+.gen-skeleton span { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--panel) 25%, #2b3140 37%, var(--panel) 63%); background-size: 400% 100%; animation: gen-shimmer 1.4s ease infinite; }
+.gen-skeleton span:nth-child(1) { width: 92%; }
+.gen-skeleton span:nth-child(2) { width: 78%; }
+.gen-skeleton span:nth-child(3) { width: 85%; }
+@keyframes gen-shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+.draft-actions { margin-top: 8px; display: flex; justify-content: flex-end; }

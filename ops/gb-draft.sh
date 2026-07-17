@@ -16,15 +16,18 @@ if [ ! -x "$CLAUDE" ] && ! command -v claude >/dev/null; then
 fi
 
 # --- 草案が必要なカードを洗い出す（無ければ Claude を起動しない）---
+# ※GUIの「今すぐ生成」で生成中(draft_status: generating)のカードは対象から除外する
+#   （オンデマンド生成との二重起動を防ぐ）。
 targets=""
-# (A) 未作成の草案（pending ＋ プレースホルダ）
+# (A) 未作成の草案（pending ＋ プレースホルダ ＋ 生成中でない）
 while IFS= read -r f; do
   [ -z "$f" ] && continue
+  grep -q "^draft_status: generating" "$f" && continue
   grep -q "^status: pending" "$f" && targets="$targets$f"$'\n'
 done < <(grep -l "AIが草案を作成予定" vault/items/*.md 2>/dev/null)
-# (B) 未対応の再考依頼（revision ＋ 再考依頼あり ＋ ✅印なし）
+# (B) 未対応の再考依頼（revision ＋ 再考依頼あり ＋ ✅印なし ＋ 生成中でない）
 for f in vault/items/*.md; do
-  if grep -q "^status: revision" "$f" && grep -q "## 再考依頼" "$f" && ! grep -q "再考依頼.*✅" "$f"; then
+  if grep -q "^status: revision" "$f" && grep -q "## 再考依頼" "$f" && ! grep -q "再考依頼.*✅" "$f" && ! grep -q "^draft_status: generating" "$f"; then
     targets="$targets$f"$'\n'
   fi
 done

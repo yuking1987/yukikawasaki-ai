@@ -2,6 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import matter from "gray-matter";
 import {
   VAULT_PATH,
@@ -426,6 +427,41 @@ app.get(
       }
     }
     res.json({ slug, pointer, cache });
+  })
+);
+
+// --- 打ち返し草案を「今すぐ生成」。draft_statusをgeneratingにし、1件分の生成を非同期起動。 ---
+app.post(
+  "/api/items/:id/generate",
+  h(async (req, res) => {
+    const item = await readItem(req.params.id);
+    if (!item) return res.status(404).json({ error: "見つかりません" });
+    if (item.draft_status === "generating")
+      return res.json({ ok: true, already: true });
+    // 生成中フラグを立てる（本文は変えない）。GUIはこれを見て「生成中…」を表示。
+    const r = await updateItemBody(item.id, item.body, {
+      draft_status: "generating",
+      draft_started_at: new Date().toISOString(),
+    });
+    if (!r.ok) return res.status(r.code).json({ error: r.msg });
+    // ローカルの Claude Code を1件分だけヘッドレス起動（送信・実行はしない・草案だけ）。
+    // detachedで投げっぱなし。完了/失敗でスクリプト側が draft_status を消す/errorにする。
+    try {
+      const script = path.join(process.cwd(), "ops", "gb-draft-one.sh");
+      const logDir = path.join(process.cwd(), "ops", "logs");
+      fs.mkdirSync(logDir, { recursive: true });
+      const out = fs.openSync(path.join(logDir, "draft-one.out.log"), "a");
+      const child = spawn("bash", [script, item.id], {
+        detached: true,
+        stdio: ["ignore", out, out],
+      });
+      child.unref();
+    } catch (e) {
+      // 起動自体に失敗したらフラグをerrorに戻す
+      await updateItemBody(item.id, item.body, { draft_status: "error" });
+      return res.status(500).json({ error: `生成の起動に失敗: ${(e as Error).message}` });
+    }
+    res.status(202).json({ ok: true });
   })
 );
 

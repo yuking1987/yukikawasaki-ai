@@ -155,6 +155,11 @@ export interface ItemFrontmatter {
   thread_last_id?: string; // スレッド最新メッセージのID。新着検知（リビング・カード）に使う。
   thread_updated?: boolean; // 取り込み後にスレッドへ新着があった印。GUIで「🔄新着あり」を表示。
   asks?: Ask[]; // AI→人間への依頼（方針を仰ぐ／調査・作業のお願い）。GUIで回答。
+  // 打ち返し草案の生成状態（GUIの「今すぐ生成」用）。generating=生成中／error=失敗。
+  // 完了時はフィールド自体を消す（＝未設定＝生成中でない）。
+  draft_status?: "generating" | "error";
+  draft_started_at?: string; // 生成開始時刻（停滞検知用）。
+
   // 蒸留提案のときの出典情報
   distill_source?: Source;
   distill_date_range?: string;

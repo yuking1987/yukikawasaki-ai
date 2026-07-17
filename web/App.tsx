@@ -51,7 +51,7 @@ export function App() {
   const [showNew, setShowNew] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"dashboard" | "office" | "knowledge">("office");
+  const [view, setView] = useState<"dashboard" | "office" | "knowledge">("dashboard");
   const [avatars, setAvatars] = useState<Record<string, string>>({});
 
   // メンバーのプロフィール画像を一度だけ取得（スレッドのアバター表示用）
@@ -1204,9 +1204,17 @@ function ThreadView({ content }: { content: string }) {
 function BodySections({
   body,
   source,
+  draftStatus,
+  startedAt,
+  onGenerate,
+  busy,
 }: {
   body: string;
   source: ItemFrontmatter["source"];
+  draftStatus?: ItemFrontmatter["draft_status"];
+  startedAt?: string;
+  onGenerate?: () => void;
+  busy?: boolean;
 }) {
   // 人間には不要なセクションはGUIでは非表示（ファイルには残る＝AIの学習・履歴用）。
   // 「状況分析（AIの読み）」／過去の「却下理由」は画面に出さない。
@@ -1239,6 +1247,14 @@ function BodySections({
             </div>
             {meta.kind === "incoming" ? (
               <ThreadView content={s.content} />
+            ) : meta.kind === "outgoing" ? (
+              <DraftSection
+                content={s.content}
+                draftStatus={draftStatus}
+                startedAt={startedAt}
+                onGenerate={onGenerate}
+                busy={busy}
+              />
             ) : (
               <SimpleMarkdown text={s.content} />
             )}
@@ -1246,6 +1262,83 @@ function BodySections({
         );
       })}
     </div>
+  );
+}
+
+// 「こう返しては？」（ドラフト）の状態表示：生成待ち／生成中（アニメ）／失敗／生成済み。
+function DraftSection({
+  content,
+  draftStatus,
+  startedAt,
+  onGenerate,
+  busy,
+}: {
+  content: string;
+  draftStatus?: ItemFrontmatter["draft_status"];
+  startedAt?: string;
+  onGenerate?: () => void;
+  busy?: boolean;
+}) {
+  const isPlaceholder = /AIが草案を作成予定/.test(content);
+  const generating = draftStatus === "generating";
+  const stalled =
+    generating && !!startedAt && Date.now() - Date.parse(startedAt) > 3 * 60 * 1000;
+
+  if (generating) {
+    return (
+      <div className="draft-state generating">
+        <div className="gen-row">
+          <span className="gen-spinner" />
+          <span>{stalled ? "生成に時間がかかっています…" : "生成中… 川崎さんの声で草案を作成しています"}</span>
+        </div>
+        <div className="gen-skeleton">
+          <span />
+          <span />
+          <span />
+        </div>
+        {stalled && onGenerate && (
+          <button className="btn sm" onClick={onGenerate} disabled={busy}>
+            もう一度試す
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (draftStatus === "error") {
+    return (
+      <div className="draft-state error">
+        <span>⚠ 生成に失敗しました。</span>
+        {onGenerate && (
+          <button className="btn sm" onClick={onGenerate} disabled={busy}>
+            ✨ 再生成
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (isPlaceholder) {
+    return (
+      <div className="draft-state waiting">
+        <span>⏳ 生成待ち（自動生成は1日2回。今すぐ作ることもできます）</span>
+        {onGenerate && (
+          <button className="btn sm primary" onClick={onGenerate} disabled={busy}>
+            ✨ 今すぐ生成
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <>
+      <SimpleMarkdown text={content} />
+      {onGenerate && (
+        <div className="draft-actions">
+          <button className="btn sm ghost" onClick={onGenerate} disabled={busy}>
+            🔄 再生成
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1710,6 +1803,12 @@ function DetailPanel({
     act(async () => {
       await api.updateBody(item.id, draft);
     }, "本文を修正しました（旧版はバックアップ済み）。");
+  const generate = () =>
+    act(async () => {
+      const r = await api.generateDraft(item.id);
+      if (r.already) return "すでに生成中です。";
+      return "草案の生成を開始しました（生成中…）。";
+    }, "生成を開始しました。");
   const confirmLearn = () => {
     const cid = `${item.id}-learn-${Date.now()}`;
     act(async () => {
@@ -1795,7 +1894,14 @@ function DetailPanel({
           )}
         </div>
         {!editing ? (
-          <BodySections body={item.body} source={item.source} />
+          <BodySections
+            body={item.body}
+            source={item.source}
+            draftStatus={item.draft_status}
+            startedAt={item.draft_started_at}
+            onGenerate={generate}
+            busy={busy}
+          />
         ) : (
           <>
             <p className="edit-hint">

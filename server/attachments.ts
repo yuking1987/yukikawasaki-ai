@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { VAULT_PATH } from "./vault.ts";
+import { dumpWorkbook } from "./xlsx.ts";
 
 // ============================================================
 // 添付ファイルの保存と表記。
@@ -87,6 +88,31 @@ export async function saveFromUrl(
   }
 }
 
+/**
+ * Excel添付なら中身をほどいて、本文に差し込む文を返す。
+ * 修正指示は貼り込み画像に描かれていることが多いので、画像も取り出してパスを併記し、
+ * AIがそれを開いて実物を見た上で工数を見立てられるようにする。Excel以外・失敗時は undefined。
+ */
+export async function detailOf(itemId: string, name: string): Promise<string | undefined> {
+  if (!/\.xlsx?$|\.xlsm$/i.test(name)) return undefined;
+  const abs = path.join(attachDirFor(itemId), safeFileName(name));
+  if (!fs.existsSync(abs)) return undefined;
+  const outDir = path.join(attachDirFor(itemId), `${safeFileName(name)}_中身`);
+  const dump = await dumpWorkbook(abs, outDir);
+  if (!dump || !dump.sheets.length) return undefined;
+
+  const parts: string[] = [
+    `  【Excelの中身】${dump.sheets.length}シート・画像${dump.imageCount}枚${dump.truncated ? "（長いため一部省略）" : ""}`,
+  ];
+  for (const s of dump.sheets) {
+    parts.push(`  ■ シート「${s.name}」`);
+    if (s.text) parts.push(s.text.split("\n").map((l) => `    ${l}`).join("\n"));
+    for (const img of s.images)
+      parts.push(`    - 貼り込み画像（${img.row}行目付近） → ${path.relative(process.cwd(), img.abs)}`);
+  }
+  return parts.join("\n");
+}
+
 /** サイズを読みやすく。 */
 export function humanSize(n: number): string {
   if (!n || n < 0) return "?";
@@ -103,7 +129,8 @@ export function attachBlock(list: AttachMeta[]): string {
   if (!list.length) return "";
   const lines = list.map((a) => {
     const meta = `${a.name}（${a.type}・${humanSize(a.size)}）`;
-    return a.rel ? `- ${meta} → ${a.rel}` : `- ${meta}`;
+    const head = a.rel ? `- ${meta} → ${a.rel}` : `- ${meta}`;
+    return a.detail ? `${head}\n${a.detail}` : head;
   });
   return `\n\n【添付 ${list.length}件】\n${lines.join("\n")}`;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
-import { api, type ItemFull, type ReferenceMeta } from "./api.ts";
+import { api, type ItemFull, type ReferenceMeta, type ProjectMeta } from "./api.ts";
 import {
   TYPE_LABELS,
   STATUS_LABELS,
@@ -38,7 +38,7 @@ export function App() {
   const [showNew, setShowNew] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"dashboard" | "office">("office");
+  const [view, setView] = useState<"dashboard" | "office" | "knowledge">("office");
 
   // メインエリア（一覧）のスクロール枠。初期表示は最下部にしたい。
   const leftColRef = useRef<HTMLDivElement>(null);
@@ -154,6 +154,12 @@ export function App() {
             >
               🏢 オフィス
             </button>
+            <button
+              className={view === "knowledge" ? "on" : ""}
+              onClick={() => setView("knowledge")}
+            >
+              📚 ナレッジ
+            </button>
           </div>
           <button className="btn ghost" onClick={() => setShowRules(true)}>
             ⚙ ルール
@@ -166,7 +172,9 @@ export function App() {
 
       {error && <div className="banner error">⚠ {error}</div>}
 
-      {view === "office" ? (
+      {view === "knowledge" ? (
+        <KnowledgeView />
+      ) : view === "office" ? (
         <OfficeView
           onOpenItem={(id) => {
             setSelectedId(id);
@@ -216,6 +224,285 @@ export function App() {
   );
 }
 
+// ============================================================
+// ナレッジビュー：まとめた全体ルール（70_references）とクライアント別コンテキスト（20_projects）を閲覧。
+// 読み取り専用。編集・送信はしない。
+// ============================================================
+
+// --- 軽量Markdownレンダラ（依存ライブラリなし。見出し/表/リスト/太字/コード/[[link]]/リンク対応） ---
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function mdInline(s: string): string {
+  let t = escapeHtml(s);
+  t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/\[\[([^\]]+)\]\]/g, '<span class="wikilink">$1</span>');
+  t = t.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
+  );
+  return t;
+}
+function mdToHtml(md: string): string {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  // frontmatter を飛ばす
+  if (lines[0] === "---") {
+    let j = 1;
+    while (j < lines.length && lines[j] !== "---") j++;
+    i = j + 1;
+  }
+  let inList = false;
+  const closeList = () => {
+    if (inList) {
+      out.push("</ul>");
+      inList = false;
+    }
+  };
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    // 表（次行が区切り行）
+    if (
+      /^\s*\|.*\|\s*$/.test(line) &&
+      i + 1 < lines.length &&
+      lines[i + 1].includes("|") &&
+      /^\s*\|?[\s:|-]*-{2,}[\s:|-]*$/.test(lines[i + 1])
+    ) {
+      closeList();
+      const header = line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(lines[i].trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+        i++;
+      }
+      i--;
+      let html =
+        "<table><thead><tr>" +
+        header.map((c) => `<th>${mdInline(c)}</th>`).join("") +
+        "</tr></thead><tbody>";
+      for (const r of rows)
+        html += "<tr>" + r.map((c) => `<td>${mdInline(c)}</td>`).join("") + "</tr>";
+      html += "</tbody></table>";
+      out.push(html);
+      continue;
+    }
+    const hm = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (hm) {
+      closeList();
+      const lvl = hm[1].length;
+      out.push(`<h${lvl}>${mdInline(hm[2])}</h${lvl}>`);
+      continue;
+    }
+    if (/^\s*---\s*$/.test(line)) {
+      closeList();
+      out.push("<hr/>");
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push(`<li>${mdInline(line.replace(/^\s*[-*]\s+/, ""))}</li>`);
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push(`<li>${mdInline(line.replace(/^\s*\d+\.\s+/, ""))}</li>`);
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      closeList();
+      out.push(`<blockquote>${mdInline(line.replace(/^\s*>\s?/, ""))}</blockquote>`);
+      continue;
+    }
+    if (line.trim() === "") {
+      closeList();
+      continue;
+    }
+    closeList();
+    out.push(`<p>${mdInline(line)}</p>`);
+  }
+  closeList();
+  return out.join("\n");
+}
+function Markdown({ text }: { text: string }) {
+  const html = useMemo(() => mdToHtml(text), [text]);
+  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function KnowledgeView() {
+  const [tab, setTab] = useState<"rules" | "clients">("rules");
+  const [refs, setRefs] = useState<ReferenceMeta[]>([]);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  const [sel, setSel] = useState<{ id: string; title: string } | null>(null);
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    api.listReferences().then((r) => setRefs(r.references)).catch(() => {});
+    api.listProjects().then((r) => setProjects(r.projects)).catch(() => {});
+  }, []);
+
+  // 重要な全体ルールを上に並べる
+  const KEY = [
+    "maintenance-judgment",
+    "asana-maintenance-precedents",
+    "maintenance-guide",
+    "maintenance-clients",
+  ];
+  const sortedRefs = useMemo(() => {
+    return [...refs].sort((a, b) => {
+      const ia = KEY.indexOf(a.slug);
+      const ib = KEY.indexOf(b.slug);
+      if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      return String(a.title).localeCompare(String(b.title), "ja");
+    });
+  }, [refs]);
+
+  const openRef = useCallback(async (r: ReferenceMeta) => {
+    setSel({ id: r.slug, title: String(r.title) });
+    setLoading(true);
+    try {
+      const d = await api.getReference(r.slug);
+      let text = d.pointer;
+      if (d.cache?.length)
+        text += "\n\n" + d.cache.map((c) => `---\n\n${c.content}`).join("\n\n");
+      setContent(text);
+    } catch (e) {
+      setContent("読み込みに失敗しました: " + (e as Error).message);
+    }
+    setLoading(false);
+  }, []);
+
+  const openProject = useCallback(async (p: ProjectMeta) => {
+    setSel({ id: p.slug, title: p.title });
+    setLoading(true);
+    try {
+      const d = await api.getContext([p.ref]);
+      const c = d.contexts[0];
+      setContent(c?.content ?? "読めません: " + (c?.error || ""));
+    } catch (e) {
+      setContent("読み込みに失敗しました: " + (e as Error).message);
+    }
+    setLoading(false);
+  }, []);
+
+  // タブ切替時・初期ロード時、未選択なら先頭を自動で開く
+  useEffect(() => {
+    if (sel) return;
+    if (tab === "rules" && sortedRefs.length) openRef(sortedRefs[0]);
+    else if (tab === "clients" && projects.length) openProject(projects[0]);
+  }, [tab, sortedRefs, projects, sel, openRef, openProject]);
+
+  const filteredProjects = useMemo(
+    () =>
+      projects.filter(
+        (p) =>
+          !q ||
+          p.title.includes(q) ||
+          p.slug.includes(q) ||
+          (p.domain || "").includes(q)
+      ),
+    [projects, q]
+  );
+
+  return (
+    <div className="knowledge">
+      <aside className="kn-sidebar">
+        <div className="kn-tabs">
+          <button
+            className={tab === "rules" ? "on" : ""}
+            onClick={() => {
+              setTab("rules");
+              setSel(null);
+            }}
+          >
+            📖 全体ルール
+          </button>
+          <button
+            className={tab === "clients" ? "on" : ""}
+            onClick={() => {
+              setTab("clients");
+              setSel(null);
+            }}
+          >
+            🏢 クライアント
+          </button>
+        </div>
+        {tab === "clients" && (
+          <input
+            className="kn-search"
+            placeholder="クライアント検索…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        )}
+        <div className="kn-list">
+          {tab === "rules"
+            ? sortedRefs.map((r) => (
+                <button
+                  key={r.slug}
+                  className={"kn-item" + (sel?.id === r.slug ? " on" : "")}
+                  onClick={() => openRef(r)}
+                >
+                  <span className="kn-item-title">{String(r.title)}</span>
+                  <span className="kn-item-sub">
+                    {r.slug}
+                    {r.stale ? " ・要更新" : ""}
+                  </span>
+                </button>
+              ))
+            : filteredProjects.map((p) => (
+                <button
+                  key={p.slug}
+                  className={"kn-item" + (sel?.id === p.slug ? " on" : "")}
+                  onClick={() => openProject(p)}
+                >
+                  <span className="kn-item-title">{p.title}</span>
+                  <span className="kn-item-sub">
+                    {p.domain || p.slug}
+                    {p.hasPrecedents ? " ・実績" : ""}
+                    {p.hasStack ? " ・技術" : ""}
+                  </span>
+                </button>
+              ))}
+          {tab === "clients" && filteredProjects.length === 0 && (
+            <div className="kn-empty-sm">該当なし</div>
+          )}
+        </div>
+        <div className="kn-count">
+          {tab === "rules"
+            ? `ルール ${sortedRefs.length}件`
+            : `クライアント ${filteredProjects.length}/${projects.length}件`}
+        </div>
+      </aside>
+      <div className="kn-content">
+        {loading ? (
+          <div className="kn-empty">読み込み中…</div>
+        ) : sel ? (
+          <>
+            <div className="kn-content-head">
+              <h2 className="kn-title">{sel.title}</h2>
+              <span className="kn-readonly">閲覧のみ</span>
+            </div>
+            <Markdown text={content} />
+          </>
+        ) : (
+          <div className="kn-empty">左の一覧から選んでください。</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function relTime(iso: string): string {
   const t = Date.parse(iso);
   if (isNaN(t)) return "";
@@ -246,6 +533,7 @@ function SyncStatus() {
   const defs: [string, string][] = [
     ["mail", "メール"],
     ["asana", "Asana"],
+    ["slack", "Slack"],
     ["references", "参照"],
   ];
   const shown = defs.filter(([k]) => status[k]);

@@ -44,10 +44,12 @@ read -r -d '' PROMPT <<'EOF'
 (A) 「status: pending」かつ 本文の「## ドラフト」が「（AIが草案を作成予定）」のままのファイル。
 (B) 「status: revision」かつ「## 再考依頼」の見出しがあり、その行にまだ「✅」印が無いファイル。
 
+大原則（すべてのカードに適用）: 要約や実績表だけで機械的に判断しない。まず、そのカードの「## 元メッセージ」を最初から最後まで熟読し、同じ客の過去のやりとり（vault/70_references/asana-maintenance-precedents.md の当該クライアント欄、context.md の「## 保守対応履歴」、あれば関連する過去カード）まで踏まえて、今の状況・関係性・要望を正しく理解してから草案を書く。前回と状況が違えば、実績に引きずられず熟考して判断を変える（変えた理由は判定サマリに記す）。読んでも分からない点は勝手に埋めず「要・川崎確認」または先方への確認事項として残す。
+
 各対象について:
-1. そのファイルの「## 元メッセージ」（スレッド全体）を読む。(B) の場合は「## 再考依頼」に書かれた社長の指示に必ず従う。
-2. vault/00_persona/kawasaki.md（人格）、社外なら vault/10_rules/tone_external.md・社内なら tone_internal.md、あれば該当する vault/20_projects/{client}/context.md を読み、文体・前提を合わせる。
-3.【サイトの修正・改修依頼のカードのとき】返信を書く前に vault/70_references/maintenance-judgment.md の3段手順を実行する。
+1. そのファイルの「## 元メッセージ」（スレッド全体）を、途中を飛ばさず最初から最後まで読む。(B) の場合は「## 再考依頼」に書かれた社長の指示に必ず従う。
+2. vault/00_persona/kawasaki.md（人格）、社外なら vault/10_rules/tone_external.md・社内なら tone_internal.md、あれば該当する vault/20_projects/{client}/context.md（案件の前提・地雷・キーパーソン）と vault/70_references/asana-maintenance-precedents.md の当該クライアント欄を読み、文体・前提・過去の工数判断を合わせる。
+3.【サイトの修正・改修依頼のカードのとき】返信を書く前に vault/70_references/maintenance-judgment.md の「大原則（既存のやりとりを熟考）」と3段手順を実行する。
    - 段階0: vault/_cache/maintenance-clients/index.md（保守案件一覧）を依頼サイトのURLまたは案件名で引き、種別を確定する。sumabi＝Elementorで保守枠は月2箇所、CS・S・Web・LP＝通常制作で月3箇所。進捗・備考（社外編集/他社構築 等）も見る。一覧に無い/引けない場合は勝手に通常扱いせず「要・川崎判断」にする。
    - 段階1: 素材・要件が工数を出せる状態か。不足（対象箇所・変更前後・差し替え画像/文言/リンク先など）があれば、工数は出さず不足を確認する打ち返しにする。
    - 段階2: 保守枠内で収まる軽微対応（タグ改変なし）か、保守外なら何時間か。工数は vault/_cache/maintenance-guide/index.md の工数算出表で照合（最低30min・15min刻み。社内外コミュニケーションコストも加味）。工数表に無い/線引きが割れる/金額の確定提示が要る/影響範囲が大きい場合は独断せず「要・川崎判断」と明記。金額の確定提示はしない。

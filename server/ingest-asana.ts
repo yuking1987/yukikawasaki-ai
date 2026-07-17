@@ -20,6 +20,8 @@ import {
 
 const TOKEN = process.env.ASANA_TOKEN || "";
 const DAYS = Number(process.env.ASANA_SINCE_DAYS || 30);
+// メンション取り込みの対象期間（担当外タスクは件数が多くなりがちなので短めに絞る）
+const MENTION_DAYS = Number(process.env.ASANA_MENTION_DAYS || 4);
 const BASE = "https://app.asana.com/api/1.0";
 
 async function asana<T = unknown>(pathq: string): Promise<T> {
@@ -82,18 +84,41 @@ async function main() {
   console.log(`[asana] 担当者=${assigneeId}`);
 
   const since = new Date(Date.now() - DAYS * 24 * 60 * 60 * 1000).toISOString();
-  // 川崎さんに割当・未完了・最近更新のタスク
-  const tasks = await asana<any[]>(
+  const FIELDS = "name,notes,due_on,completed,modified_at,permalink_url,projects.name";
+  // (1) 川崎さんに割当・未完了・最近更新のタスク（本人の担当仕事）
+  const assigned = await asana<any[]>(
     `/tasks?assignee=${assigneeId}&workspace=${ws.gid}&completed_since=now&modified_since=${since}` +
-      `&opt_fields=name,notes,due_on,completed,modified_at,permalink_url,projects.name&limit=100`
+      `&opt_fields=${FIELDS}&limit=100`
   );
+  // (2) 川崎さんがコラボレーター（＝@メンションされると自動で入る）の未完了タスク。
+  //     担当が別の人でも「メンションされた」タスクを拾うため。範囲は最近 MENTION_DAYS 日。
+  const mentionSince = new Date(Date.now() - MENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  let followed: any[] = [];
+  try {
+    followed = await asana<any[]>(
+      `/workspaces/${ws.gid}/tasks/search?followers.any=${assigneeId}&completed=false` +
+        `&modified_at.after=${mentionSince}&opt_fields=${FIELDS}&limit=100`
+    );
+  } catch (e) {
+    console.error(`[asana] メンション検索に失敗（担当タスクのみ継続）: ${(e as Error).message}`);
+  }
+  // 担当タスクを優先。フォロー分は担当に無いものだけ「メンションのみ」として足す。
+  const assignedGids = new Set(assigned.map((t) => t.gid));
+  const queue: { t: any; mentionedOnly: boolean }[] = [
+    ...assigned.map((t) => ({ t, mentionedOnly: false })),
+    ...followed
+      .filter((t) => !assignedGids.has(t.gid))
+      .map((t) => ({ t, mentionedOnly: true })),
+  ];
+
   const existing = await listItems();
   let written = 0,
     updated = 0,
     closed = 0,
-    reopened = 0;
+    reopened = 0,
+    mentions = 0;
 
-  for (const t of tasks) {
+  for (const { t, mentionedOnly } of queue) {
     const key = `asana:${t.gid}`;
     const id = `asana-${t.gid}`;
     const proj = t.projects?.[0]?.name || "未分類";
@@ -110,9 +135,17 @@ async function main() {
 
     // コメント履歴（stories）取得 → 説明欄＋コメントでスレッド化
     const stories = await asana<any[]>(
-      `/tasks/${t.gid}/stories?opt_fields=created_at,created_by.name,type,text,resource_subtype`
+      `/tasks/${t.gid}/stories?opt_fields=created_at,created_by.name,type,text,html_text,resource_subtype`
     );
     const comments = stories.filter((s) => s.type === "comment" && s.text);
+    // 「メンションのみ」タスク（担当は別人）は、実際に川崎さんが@メンションされている時だけ扱う。
+    // Asanaのメンションは html_text に data-asana-gid="<本人ID>" として入る。
+    if (mentionedOnly) {
+      const mentioned = stories.some((s) =>
+        (s.html_text || "").includes(`data-asana-gid="${assigneeId}"`)
+      );
+      if (!mentioned) continue; // 単にフォローしているだけのタスクは拾わない
+    }
     const notesClean = clean(t.notes);
     // 情報ゼロ（説明欄なし＆コメントなし）のタスクはカード化しない。
     // ※後で説明やコメントが付けば、その時の取り込みで拾う（match無し→情報あり→新規作成）。
@@ -163,12 +196,16 @@ async function main() {
     const text = `${t.name}\n${t.notes || ""}`;
     const maintenance = /保守|障害|サーバ|SSL|移行|ドメイン|メンテ|バックアップ/.test(text);
     const ciy = /CIY|シーアイワイ|ciy-biz|assessment/i.test(text);
-    const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
+    // メンションのみ＝社内メンバーが川崎さんに聞いている想定＝社内文体。担当タスクは従来どおり社外。
+    const mentionNote = mentionedOnly
+      ? `> ※このカードは「川崎さんがメンションされた」タスクです（担当は別の人）。社内向けの返信・確認として草案します。\n\n`
+      : "";
+    const body = `## 元メッセージ\n${mentionNote}${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
     const fm: ItemFrontmatter = {
       id,
       source: "asana",
       project: proj,
-      audience: "external",
+      audience: mentionedOnly ? "internal" : "external",
       type: "reply",
       status: "pending",
       title: (t.name || "(無題)").slice(0, 80),
@@ -183,11 +220,14 @@ async function main() {
       thread_last_id: lastId,
     };
     const r = await createItem(fm, body);
-    if (r.ok) written++;
+    if (r.ok) {
+      written++;
+      if (mentionedOnly) mentions++;
+    }
   }
 
   console.log(
-    `[asana] 対象 ${tasks.length} タスク → 新規 ${written} / スレッド更新 ${updated} / 対応済みクローズ ${closed} / 再オープン ${reopened}`
+    `[asana] 担当 ${assigned.length} / メンション候補 ${followed.length} → 新規 ${written}（うちメンション ${mentions}） / スレッド更新 ${updated} / 対応済みクローズ ${closed} / 再オープン ${reopened}`
   );
   recordSync("asana"); // 最終取り込み時刻を記録（画面表示用）
 }

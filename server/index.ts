@@ -405,6 +405,49 @@ app.get(
   })
 );
 
+// --- クライアント（案件コンテキスト）一覧。20_projects 配下で context.md を持つもの。 ---
+app.get(
+  "/api/projects",
+  h(async (_req, res) => {
+    const dir = path.join(VAULT_PATH, "20_projects");
+    if (!fs.existsSync(dir)) return res.json({ projects: [] });
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
+    const projects: {
+      slug: string;
+      title: string;
+      domain?: string;
+      ref: string;
+      hasStack: boolean;
+      hasPrecedents: boolean;
+    }[] = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith(".")) continue;
+      const slug = e.name;
+      if (!isValidSlug(slug)) continue;
+      const ref = `20_projects/${slug}/context.md`;
+      const abs = resolveContextRef(ref);
+      if (!abs || !fs.existsSync(abs)) continue;
+      try {
+        const raw = await fsp.readFile(abs, "utf8");
+        const parsed = matter(raw);
+        const d = parsed.data as Record<string, unknown>;
+        projects.push({
+          slug,
+          title: d.title ? String(d.title) : slug,
+          domain: d.client_domain ? String(d.client_domain) : undefined,
+          ref,
+          hasStack: raw.includes("tech-stack:start"),
+          hasPrecedents: raw.includes("maint-precedents:start"),
+        });
+      } catch {
+        /* skip broken */
+      }
+    }
+    projects.sort((a, b) => a.title.localeCompare(b.title, "ja"));
+    res.json({ projects });
+  })
+);
+
 // --- 受付の仮判定（振り分け・重要度）。GUIの補助。実行はしない。 ---
 app.post("/api/triage", (req, res) => {
   const type = req.body?.type;

@@ -12,6 +12,15 @@ export interface ReferenceMeta {
   stale: boolean;
 }
 
+export interface ProjectMeta {
+  slug: string;
+  title: string;
+  domain?: string;
+  ref: string;
+  hasStack: boolean;
+  hasPrecedents: boolean;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -79,6 +88,12 @@ export const api = {
       `/api/context?refs=${encodeURIComponent(refs.join(","))}`
     ),
   listReferences: () => req<{ references: ReferenceMeta[] }>(`/api/references`),
+  getReference: (slug: string) =>
+    req<{ slug: string; pointer: string; cache: { file: string; content: string }[] }>(
+      `/api/references/${encodeURIComponent(slug)}`
+    ),
+  listProjects: () =>
+    req<{ projects: ProjectMeta[] }>(`/api/projects`),
   triage: (type: string, text: string) =>
     req<{ assignee: string; importance: string }>(`/api/triage`, {
       method: "POST",

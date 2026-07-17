@@ -1,4 +1,4 @@
-import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全検査
+import { ensureWritableForCli, recordSync, mergeAvatars } from "./vault.ts"; // .env読込＋安全検査
 import {
   createItem,
   listItems,
@@ -37,6 +37,7 @@ const BASE = "https://slack.com/api";
 let USERS = new Map<string, string>();
 async function loadUsers(): Promise<Map<string, string>> {
   const map = new Map<string, string>();
+  const avatars: Record<string, string> = {};
   try {
     let cursor = "";
     let pages = 0;
@@ -46,10 +47,13 @@ async function loadUsers(): Promise<Map<string, string>> {
         const p = u.profile || {};
         const name = p.display_name || p.real_name || u.real_name || u.name || u.id;
         if (u.id && name) map.set(u.id, name);
+        const img = p.image_192 || p.image_72 || p.image_48;
+        if (name && img) avatars[name] = img; // 表示名→プロフィール画像
       }
       cursor = j.response_metadata?.next_cursor || "";
       pages++;
     } while (cursor && pages < 5);
+    if (Object.keys(avatars).length) mergeAvatars(avatars);
   } catch {
     /* 取得失敗時はID表示にフォールバック */
   }

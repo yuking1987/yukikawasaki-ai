@@ -65,6 +65,36 @@ export function readSyncStatus(): Record<string, string> {
   }
 }
 
+/** メンバーの表示名→プロフィール画像URL（_cache/avatars.json）。取り込み時に各ツールから更新。 */
+export function mergeAvatars(map: Record<string, string>): void {
+  try {
+    const dir = path.join(VAULT_PATH, "_cache");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "avatars.json");
+    let data: Record<string, string> = {};
+    try {
+      data = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      /* 初回は空 */
+    }
+    for (const [name, url] of Object.entries(map)) {
+      if (name && url) data[name] = url;
+    }
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+  } catch {
+    /* 失敗は握りつぶす */
+  }
+}
+export function readAvatars(): Record<string, string> {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(VAULT_PATH, "_cache", "avatars.json"), "utf8")
+    );
+  } catch {
+    return {};
+  }
+}
+
 /** アプリが書き込んでよいフォルダ（items配下と履歴）。 */
 export const WRITABLE_DIRS = {
   items: "items",

@@ -101,6 +101,7 @@ export const api = {
     }),
   health: () => req<{ ok: boolean; bootId?: string }>(`/api/health`),
   syncStatus: () => req<{ status: Record<string, string> }>(`/api/sync-status`),
+  avatars: () => req<{ avatars: Record<string, string> }>(`/api/avatars`),
   getRules: () => req<{ text: string; ignore: string[] }>(`/api/rules`),
   addRule: (text: string, ignoreKeyword: string) =>
     req<{ ok: boolean; text: string; ignore: string[] }>(`/api/rules`, {

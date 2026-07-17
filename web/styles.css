@@ -104,6 +104,7 @@ body {
 /* ツール（入口）バッジ：色＋アイコンで一目で分かるように */
 .badge.src { font-weight: 700; display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-width: 1px; border-style: solid; }
 .src-ico { font-size: 12px; }
+svg.src-ico { width: 13px; height: 13px; display: inline-block; vertical-align: -2px; }
 .badge.src.src-slack    { background: #2a1830; color: #e6b3f0; border-color: #7a3a8f; }
 .badge.src.src-gmail    { background: #2e1512; color: #ffb4a8; border-color: #a5382a; }
 .badge.src.src-asana    { background: #2e1a1c; color: #ff9d9d; border-color: #b85c62; }
@@ -327,6 +328,7 @@ body {
 .tv-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
 .tv-msg.open > .tv-row { background: #10281a; }
 .tv-avatar { flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; }
+img.tv-avatar { object-fit: cover; background: var(--panel-2); }
 .tv-name { font-weight: 700; font-size: 12.5px; white-space: nowrap; }
 .tv-preview { flex: 1; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tv-when { flex: none; color: var(--muted); font-size: 11px; margin-left: auto; }

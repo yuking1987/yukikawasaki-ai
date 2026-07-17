@@ -11,6 +11,7 @@ import {
   isValidSlug,
   checkWritableDirsSafe,
   readSyncStatus,
+  readAvatars,
 } from "./vault.ts";
 import {
   listItems,
@@ -468,6 +469,14 @@ app.get(
   "/api/sync-status",
   h(async (_req, res) => {
     res.json({ status: readSyncStatus() });
+  })
+);
+
+// --- メンバーのプロフィール画像（表示名→URL） ---
+app.get(
+  "/api/avatars",
+  h(async (_req, res) => {
+    res.json({ avatars: readAvatars() });
   })
 );
 

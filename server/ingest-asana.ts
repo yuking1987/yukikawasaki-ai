@@ -1,4 +1,4 @@
-import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全検査
+import { ensureWritableForCli, recordSync, mergeAvatars } from "./vault.ts"; // .env読込＋安全検査
 import {
   createItem,
   listItems,
@@ -90,19 +90,28 @@ async function main() {
   }
   console.log(`[asana] ${me.name} / ${ws.name}（過去${DAYS}日の担当タスク）`);
 
-  // 担当者を解決：ASANA_ASSIGNEE 指定 > 川崎さん(email/名前一致) > me
+  // ユーザー一覧を取得：担当者解決＋プロフィール写真（アバター）マップの更新に使う。
   let assigneeId = process.env.ASANA_ASSIGNEE || "";
-  if (!assigneeId) {
-    try {
-      const users = await asana<any[]>(`/workspaces/${ws.gid}/users?opt_fields=name,email`);
+  try {
+    const users = await asana<any[]>(
+      `/workspaces/${ws.gid}/users?opt_fields=name,email,photo.image_128x128&limit=100`
+    );
+    // 表示名→写真URL を保存（スレッドのアバター表示に使う）
+    const avatars: Record<string, string> = {};
+    for (const u of users) {
+      const url = u.photo?.image_128x128;
+      if (u.name && url) avatars[u.name] = url;
+    }
+    if (Object.keys(avatars).length) mergeAvatars(avatars);
+    if (!assigneeId) {
       const email = (process.env.KAWASAKI_GMAIL || "kawasaki@gb-jp.com").toLowerCase();
       const hit = users.find(
         (u) => (u.email || "").toLowerCase() === email || /kawasaki|川崎/i.test(u.name || "")
       );
       if (hit) assigneeId = hit.gid;
-    } catch {
-      /* email権限が無い等は無視 */
     }
+  } catch {
+    /* 権限が無い等は無視 */
   }
   if (!assigneeId) assigneeId = "me";
   console.log(`[asana] 担当者=${assigneeId}`);

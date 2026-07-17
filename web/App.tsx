@@ -1,5 +1,17 @@
-import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  createContext,
+  useContext,
+  type ReactNode,
+} from "react";
 import { api, type ItemFull, type ReferenceMeta, type ProjectMeta } from "./api.ts";
+
+// メンバー表示名→プロフィール画像URL。スレッドのアバター表示に使う（無ければ色付きイニシャル）。
+const AvatarContext = createContext<Record<string, string>>({});
 import {
   TYPE_LABELS,
   STATUS_LABELS,
@@ -39,6 +51,15 @@ export function App() {
   const [showRules, setShowRules] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"dashboard" | "office" | "knowledge">("office");
+  const [avatars, setAvatars] = useState<Record<string, string>>({});
+
+  // メンバーのプロフィール画像を一度だけ取得（スレッドのアバター表示用）
+  useEffect(() => {
+    api
+      .avatars()
+      .then((r) => setAvatars(r.avatars))
+      .catch(() => {});
+  }, []);
 
   // メインエリア（一覧）のスクロール枠。初期表示は最下部にしたい。
   const leftColRef = useRef<HTMLDivElement>(null);
@@ -130,6 +151,7 @@ export function App() {
   );
 
   return (
+    <AvatarContext.Provider value={avatars}>
     <div className="app">
       <header className="topbar">
         <div className="brand">
@@ -221,6 +243,7 @@ export function App() {
 
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
+    </AvatarContext.Provider>
   );
 }
 
@@ -806,10 +829,45 @@ const SOURCE_ICONS: Record<string, string> = {
   tokoton: "🔧",
   other: "📎",
 };
+// 実ブランドロゴ（公式SVG）。Slack/Asana/Gmail はロゴ、他は絵文字にフォールバック。
+function SourceIcon({ source }: { source: string }) {
+  if (source === "slack")
+    return (
+      <svg className="src-ico" viewBox="0 0 122.8 122.8" aria-hidden="true">
+        <path d="M25.8 77.6c0 7.1-5.8 12.9-12.9 12.9S0 84.7 0 77.6s5.8-12.9 12.9-12.9h12.9v12.9z" fill="#E01E5A" />
+        <path d="M32.3 77.6c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V77.6z" fill="#E01E5A" />
+        <path d="M45.2 25.8c-7.1 0-12.9-5.8-12.9-12.9S38.1 0 45.2 0s12.9 5.8 12.9 12.9v12.9H45.2z" fill="#36C5F0" />
+        <path d="M45.2 32.3c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H12.9C5.8 58.1 0 52.3 0 45.2s5.8-12.9 12.9-12.9h32.3z" fill="#36C5F0" />
+        <path d="M97 45.2c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9-5.8 12.9-12.9 12.9H97V45.2z" fill="#2EB67D" />
+        <path d="M90.5 45.2c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V12.9C64.7 5.8 70.5 0 77.6 0s12.9 5.8 12.9 12.9v32.3z" fill="#2EB67D" />
+        <path d="M77.6 97c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9-12.9-5.8-12.9-12.9V97h12.9z" fill="#ECB22E" />
+        <path d="M77.6 90.5c-7.1 0-12.9-5.8-12.9-12.9s5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H77.6z" fill="#ECB22E" />
+      </svg>
+    );
+  if (source === "asana")
+    return (
+      <svg className="src-ico" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="6.4" r="3.3" fill="#F06A6A" />
+        <circle cx="6.1" cy="15.6" r="3.3" fill="#F06A6A" />
+        <circle cx="17.9" cy="15.6" r="3.3" fill="#F06A6A" />
+      </svg>
+    );
+  if (source === "gmail")
+    return (
+      <svg className="src-ico" viewBox="0 0 48 48" aria-hidden="true">
+        <path fill="#4caf50" d="M45,16.2l-5,2.75l-5,4.75L35,40h7c1.657,0,3-1.343,3-3V16.2z" />
+        <path fill="#1e88e5" d="M3,16.2l3.614,1.71L13,23.7V40H6c-1.657,0-3-1.343-3-3V16.2z" />
+        <polygon fill="#e53935" points="35,11.2 24,19.45 13,11.2 12,17 13,23.7 24,31.95 35,23.7 36,17" />
+        <path fill="#c62828" d="M3,12.298V16.2l10,7.5V11.2L9.876,8.859C9.132,8.301,8.228,8,7.298,8h0C4.924,8,3,9.924,3,12.298z" />
+        <path fill="#fbc02d" d="M45,12.298V16.2l-10,7.5V11.2l3.124-2.341C38.868,8.301,39.772,8,40.702,8h0C43.076,8,45,9.924,45,12.298z" />
+      </svg>
+    );
+  return <span className="src-ico">{SOURCE_ICONS[source] ?? "📎"}</span>;
+}
 function SourceBadge({ source }: { source: ItemFrontmatter["source"] }) {
   return (
     <span className={`badge src src-${source}`}>
-      <span className="src-ico">{SOURCE_ICONS[source] ?? "📎"}</span>
+      <SourceIcon source={source} />
       {SOURCE_LABELS[source]}
     </span>
   );
@@ -966,6 +1024,7 @@ function avatarColor(name: string): string {
 
 // スレッド（複数メッセージ）を、最新だけ展開・過去は1行に畳んで表示（Spark風）。
 function ThreadView({ content }: { content: string }) {
+  const avatars = useContext(AvatarContext);
   // メッセージ見出しは「日付始まりの【…】」だけ（本文中の【…】を誤分割しない）
   const parts = content.split(/^【(\d{4}-\d{2}-\d{2}[^】]*)】$/m);
   const lead = parts[0].trim();
@@ -983,7 +1042,10 @@ function ThreadView({ content }: { content: string }) {
       {msgs.map((m, i) => {
         const { when, name } = parseHeader(m.header);
         const isLast = i === msgs.length - 1;
-        const avatar = (
+        const photo = avatars[name] || avatars[name.trim()];
+        const avatar = photo ? (
+          <img className="tv-avatar" src={photo} alt={name} loading="lazy" />
+        ) : (
           <span className="tv-avatar" style={{ background: avatarColor(name) }}>
             {initials(name)}
           </span>

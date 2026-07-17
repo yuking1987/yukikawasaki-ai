@@ -1,7 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全/初期化検査
-import { saveBuffer, attachBlock, type AttachMeta } from "./attachments.ts";
+import { saveBuffer, attachBlock, detailOf, type AttachMeta } from "./attachments.ts";
 import {
   createItem,
   listItems,
@@ -402,7 +402,9 @@ async function main() {
             const rel = a.content
               ? await saveBuffer(itemId, a.name, a.content)
               : undefined;
-            metas.push({ name: a.name, type: a.type, size: a.size, rel });
+            // Excelは中身（文字＋貼り込み画像）までほどく。修正指示は画像にあることが多いため。
+            const detail = rel ? await detailOf(itemId, a.name) : undefined;
+            metas.push({ name: a.name, type: a.type, size: a.size, rel, detail });
           }
           parts.push(
             `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${threadBody(m.text) || "（本文なし）"}${attachBlock(metas)}`

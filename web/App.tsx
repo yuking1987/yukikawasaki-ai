@@ -934,11 +934,86 @@ function parseSections(body: string): { rawTitle: string; content: string }[] {
   return out.filter((s) => s.rawTitle || s.content.trim());
 }
 
+// HTMLエンティティ（&gt; &amp; 数値参照など）を実文字へ
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  hellip: "…", mdash: "—", ndash: "–", copy: "©", reg: "®", trade: "™",
+  laquo: "«", raquo: "»", middot: "・", bull: "•",
+};
+function decodeEntities(s: string): string {
+  return s.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
+    if (code[0] === "#") {
+      const n =
+        code[1] === "x" || code[1] === "X"
+          ? parseInt(code.slice(2), 16)
+          : parseInt(code.slice(1), 10);
+      return Number.isFinite(n) ? String.fromCodePoint(n) : m;
+    }
+    return NAMED_ENTITIES[code.toLowerCase()] ?? m;
+  });
+}
+// Slack/Asana等の :emoji: ショートコードを実絵文字へ（よく使うものを収録）
+const EMOJI_SHORTCODES: Record<string, string> = {
+  pray: "🙏", bow: "🙇", folded_hands: "🙏", tada: "🎉", confetti_ball: "🎊",
+  "+1": "👍", thumbsup: "👍", "-1": "👎", thumbsdown: "👎", ok_hand: "👌",
+  clap: "👏", muscle: "💪", fire: "🔥", eyes: "👀", heart: "❤️", broken_heart: "💔",
+  smile: "😄", smiley: "😃", grinning: "😀", grin: "😁", laughing: "😆", joy: "😂",
+  rofl: "🤣", sweat_smile: "😅", sweat: "😓", cry: "😢", sob: "😭", wink: "😉",
+  blush: "😊", slightly_smiling_face: "🙂", upside_down_face: "🙃", relieved: "😌",
+  thinking: "🤔", thinking_face: "🤔", raised_hands: "🙌", wave: "👋", ok: "🆗",
+  point_up: "☝️", point_down: "👇", point_right: "👉", point_left: "👈",
+  white_check_mark: "✅", heavy_check_mark: "✔️", ballot_box_with_check: "☑️",
+  x: "❌", negative_squared_cross_mark: "❎", warning: "⚠️", bulb: "💡",
+  rocket: "🚀", sparkles: "✨", star: "⭐", star2: "🌟", zap: "⚡",
+  question: "❓", grey_question: "❔", exclamation: "❗", bangbang: "‼️",
+  "100": "💯", memo: "📝", pencil: "✏️", pushpin: "📌", paperclip: "📎",
+  calendar: "📅", date: "📅", hourglass: "⏳", hourglass_flowing_sand: "⏳",
+  alarm_clock: "⏰", clock: "🕐", mag: "🔍", lock: "🔒", key: "🔑",
+  email: "📧", envelope: "✉️", phone: "📞", telephone: "📞", bell: "🔔",
+  no_good: "🙅", raising_hand: "🙋", sunglasses: "😎", partying_face: "🥳",
+  hugging_face: "🤗", pleading_face: "🥺", disappointed: "😞", weary: "😩",
+  tired_face: "😫", exploding_head: "🤯", ghost: "👻", skull: "💀", poop: "💩",
+  robot: "🤖", gift: "🎁", coffee: "☕", beer: "🍺", cake: "🎂",
+  smiling_face_with_tear: "🥲", face_with_rolling_eyes: "🙄", neutral_face: "😐",
+  no_mouth: "😶", zipper_mouth_face: "🤐", sleeping: "😴", dizzy_face: "😵",
+  handshake: "🤝", writing_hand: "✍️", speech_balloon: "💬", email_: "📩",
+  chart_with_upwards_trend: "📈", chart_with_downwards_trend: "📉", bar_chart: "📊",
+  heavy_plus_sign: "➕", heavy_minus_sign: "➖", arrow_right: "➡️", arrow_left: "⬅️",
+  arrow_up: "⬆️", arrow_down: "⬇️", recycle: "♻️", new: "🆕", up: "🆙",
+};
+function emojify(s: string): string {
+  return s.replace(/:([a-z0-9_+-]+):/gi, (m, name: string) => {
+    const e = EMOJI_SHORTCODES[name.toLowerCase()];
+    return e ?? m;
+  });
+}
+function decorate(s: string): string {
+  return emojify(decodeEntities(s));
+}
+
 function inlineMd(text: string): ReactNode {
-  // **bold** のみ対応（安全のためHTMLは挿入しない）
-  return text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
-    p.startsWith("**") && p.endsWith("**") ? <strong key={i}>{p.slice(2, -2)}</strong> : p
-  );
+  // エンティティ復号・絵文字化してから、URLリンク・**bold** を組み立てる（HTMLは挿入しない）
+  const s = decorate(text);
+  const parts = s.split(/(https?:\/\/[^\s<>"'（）]+|\*\*[^*]+\*\*)/g);
+  return parts.map((p, i) => {
+    if (/^https?:\/\//.test(p)) {
+      // 末尾の句読点・閉じ括弧はリンクから外す
+      const mm = p.match(/^(.*?)([.,!?、。）)\]】]*)$/s);
+      const url = mm ? mm[1] : p;
+      const tail = mm ? mm[2] : "";
+      return (
+        <span key={i}>
+          <a href={url} target="_blank" rel="noreferrer noopener">
+            {url}
+          </a>
+          {tail}
+        </span>
+      );
+    }
+    if (p.startsWith("**") && p.endsWith("**"))
+      return <strong key={i}>{p.slice(2, -2)}</strong>;
+    return p;
+  });
 }
 
 function SimpleMarkdown({ text }: { text: string }) {

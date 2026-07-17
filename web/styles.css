@@ -433,7 +433,8 @@ img.tv-avatar { object-fit: cover; background: var(--panel-2); }
   margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--accent);
   background: var(--panel-2); color: var(--muted); border-radius: 0 6px 6px 0;
 }
-.md a { color: var(--accent); }
+.md a { color: var(--accent); text-decoration: none; word-break: break-all; overflow-wrap: anywhere; }
+.md a:hover { text-decoration: underline; }
 .md .wikilink { color: var(--accent); background: var(--panel-2); padding: 0 5px; border-radius: 5px; font-size: 12px; }
 .md table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12.5px; display: block; overflow-x: auto; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; vertical-align: top; }

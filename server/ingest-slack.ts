@@ -70,19 +70,37 @@ type SlackMsg = {
   ts: string;
   thread_ts?: string;
   reply_count?: number;
+  latest_reply?: string; // スレッド最新返信のts（差分判定に使う）
 };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function slack(
   method: string,
   params: Record<string, string> = {}
 ): Promise<any> {
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${BASE}/${method}?${qs}`, {
-    headers: { Authorization: `Bearer ${TOKEN}` },
-  });
-  const json = (await res.json()) as any;
-  if (!json.ok) throw new Error(`Slack ${method}: ${json.error}`);
-  return json;
+  // 429/ratelimited は Retry-After に従って待機・再試行（最大4回）。
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch(`${BASE}/${method}?${qs}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    if (res.status === 429) {
+      const wait = Number(res.headers.get("retry-after") || "2");
+      await sleep((wait + 1) * 1000);
+      continue;
+    }
+    const json = (await res.json()) as any;
+    if (!json.ok) {
+      if (json.error === "ratelimited") {
+        await sleep(3000);
+        continue;
+      }
+      throw new Error(`Slack ${method}: ${json.error}`);
+    }
+    return json;
+  }
+  throw new Error(`Slack ${method}: レート制限で再試行上限に達しました`);
 }
 
 // cursorページングで最新分をまとめて取得（暴走防止に最大5ページ）。
@@ -156,9 +174,18 @@ function titleOf(raw: string): string {
   const b = line.match(/【([^】]+)】/);
   return ((b ? b[1] : line).replace(/[*`>]/g, "").trim() || "(無題)").slice(0, 80);
 }
-// 正例に混ぜたくない機微（IP・パスワード値の平文）を含む発言は蓄積しない。
+// 正例に混ぜたくない機微を含む発言は蓄積しない（IP・トークン・メール・電話・コード・機密URL等）。
 function looksSecret(t: string): boolean {
-  return /\b(\d{1,3}\.){3}\d{1,3}\b/.test(t) || /pass(word)?\s*[:=]\s*\S/i.test(t);
+  return (
+    /\b(\d{1,3}\.){3}\d{1,3}\b/.test(t) || // IPアドレス
+    /pass(word)?\s*[:=]\s*\S/i.test(t) || // password= 値
+    /\b(xox[baprs]-|sk-|ghp_|gho_|AKIA|ASIA)[A-Za-z0-9._-]{6,}/.test(t) || // APIキー/トークン
+    /Bearer\s+[A-Za-z0-9._-]{8,}/.test(t) || // Bearerトークン
+    /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(t) || // メールアドレス（PII）
+    /0\d{1,3}[-(]\d{1,4}[-)]\d{3,4}/.test(t) || // 電話番号
+    /```/.test(t) || // コードブロック（技術ログ・秘匿設定が混入しやすい）
+    /files\.slack\.com|slack-files\.com|drive\.google\.com|docs\.google\.com/.test(t) // ファイル/機密URL
+  );
 }
 
 async function main() {
@@ -190,6 +217,9 @@ async function main() {
     closed = 0,
     reopened = 0,
     learned = 0;
+  let hadError = false;
+  const processedKeys = new Set<string>(); // 今回のhistoryで確認したスレッドのthread_key
+  const failedChannels = new Set<string>(); // 履歴取得に失敗したch（追従ループでも今回はskip）
 
   for (const ch of CHANNELS) {
     let msgs: SlackMsg[];
@@ -197,6 +227,8 @@ async function main() {
       msgs = await paged("conversations.history", { channel: ch, oldest, limit: "200" });
     } catch (e) {
       console.error(`[slack] ${ch} 履歴取得に失敗: ${(e as Error).message}`);
+      hadError = true;
+      failedChannels.add(ch);
       continue;
     }
     // トップレベル（スレッド親 or 単発）だけを対象に（返信・ブロードキャストは親側で拾う）。
@@ -205,17 +237,30 @@ async function main() {
     for (const top of tops) {
       if (!isReal(top) && !(top.reply_count && top.reply_count > 0)) continue;
 
-      // スレッド全体を時系列で取得
+      const threadTs = top.thread_ts || top.ts;
+      const key = `slack:${ch}:${threadTs}`;
+      processedKeys.add(key);
+      const match = existing.find((it) => it.thread_key === key);
+      // 差分最適化: 既存カードがあり、スレッド最新ts(latest_reply)が記録済みと一致するなら再取得しない。
+      // ただし返信ありなのに latest_reply が無い(取りこぼし)場合は skip せず replies を取りに行く。
+      const latest = top.latest_reply || threadTs;
+      const canSkip = !(top.reply_count && top.reply_count > 0 && !top.latest_reply);
+      if (match && canSkip && match.thread_last_id === latest && match.status !== "done")
+        continue;
+
+      // スレッド全体を時系列で取得（返信取得に失敗したスレッドは skip＝返信済みを未返信化しない）
       let thread: SlackMsg[];
       if (top.reply_count && top.reply_count > 0) {
         try {
           thread = await paged("conversations.replies", {
             channel: ch,
-            ts: top.thread_ts || top.ts,
+            ts: threadTs,
             limit: "200",
           });
-        } catch {
-          thread = [top];
+        } catch (e) {
+          console.error(`[slack] ${ch} スレッド取得失敗(skip): ${(e as Error).message}`);
+          hadError = true;
+          continue;
         }
       } else {
         thread = [top];
@@ -250,11 +295,9 @@ async function main() {
 
       const last = real[real.length - 1];
       const lastId = last.ts;
-      const key = `slack:${ch}:${top.thread_ts || top.ts}`;
-      const id = `slack-${ch}-${(top.thread_ts || top.ts).replace(".", "-")}`;
+      const id = `slack-${ch}-${threadTs.replace(".", "-")}`;
       const gbReplied = last.user === ME; // 本人が最後＝対応済みの合図
       const threadSection = threadOf(real);
-      const match = existing.find((it) => it.thread_key === key);
 
       if (match) {
         if (match.status === "pending" || match.status === "revision") {
@@ -267,9 +310,9 @@ async function main() {
             closed++;
           }
         } else if (match.status === "done") {
-          // 対応済みでも、他メンバー/相手から新着が来たら承認待ちへ復活
+          // 対応済みでも、他メンバー/相手から新着が来たら承認待ちへ復活（古い草案は破棄して作り直させる）
           if (match.thread_last_id !== lastId && !gbReplied) {
-            await updateThread(match.id, threadSection, lastId);
+            await updateThread(match.id, threadSection, lastId, true);
             await updateStatus(match.id, "pending");
             reopened++;
           }
@@ -287,7 +330,7 @@ async function main() {
         ? "code"
         : "reply";
       const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
-      const tsNoDot = (top.thread_ts || top.ts).replace(".", "");
+      const tsNoDot = threadTs.replace(".", "");
       const fm: ItemFrontmatter = {
         id,
         source: "slack",
@@ -310,10 +353,39 @@ async function main() {
     }
   }
 
+  // 履歴(直近7日)に親が出ない古いスレッドでも、既存の未対応Slackカードは直接再確認して追従する。
+  for (const it of existing) {
+    if (it.source !== "slack") continue;
+    if (it.status !== "pending" && it.status !== "revision") continue;
+    if (!it.thread_key || processedKeys.has(it.thread_key)) continue;
+    const mm = it.thread_key.match(/^slack:([^:]+):(.+)$/);
+    if (!mm) continue;
+    if (failedChannels.has(mm[1])) continue; // 履歴取得に失敗したchは今回追従しない（429増幅回避）
+    let thr: SlackMsg[];
+    try {
+      thr = await paged("conversations.replies", { channel: mm[1], ts: mm[2], limit: "200" });
+    } catch {
+      hadError = true;
+      continue;
+    }
+    const real2 = thr.filter(isReal);
+    if (!real2.length) continue;
+    const last2 = real2[real2.length - 1];
+    if (it.thread_last_id === last2.ts) continue;
+    await updateThread(it.id, threadOf(real2), last2.ts);
+    updated++;
+    if (last2.user === ME) {
+      await updateStatus(it.id, "done");
+      closed++;
+    }
+  }
+
   console.log(
     `[slack] ${CHANNELS.length}ch → 新規 ${written} / スレッド更新 ${updated} / クローズ ${closed} / 再オープン ${reopened} / 正例 ${learned}`
   );
-  recordSync("slack"); // 最終取り込み時刻を記録（画面表示用）
+  if (hadError)
+    console.warn("[slack] 一部の取得に失敗しました（次回巡回で再取得されます）。");
+  recordSync("slack"); // 最終取り込み(試行)時刻を記録（画面表示用）
 }
 
 main().catch((e) => {

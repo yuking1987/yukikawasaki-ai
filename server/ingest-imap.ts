@@ -1,6 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全/初期化検査
+import { saveBuffer, attachBlock, type AttachMeta } from "./attachments.ts";
 import {
   createItem,
   listItems,
@@ -25,9 +26,48 @@ const PORT = Number(process.env.IMAP_PORT || 993);
 const USER = process.env.IMAP_USER || "";
 const PASS = process.env.IMAP_PASSWORD || "";
 const ME = (process.env.KAWASAKI_GMAIL || USER).toLowerCase();
+/** 自社ドメイン（本人アドレスから導出）。社内発の控えメールを見分けるのに使う。 */
+const MY_DOMAIN = ME.split("@")[1] || "";
 const WRITE = process.argv.includes("--write");
 const DAYS = Number(process.env.IMAP_SINCE_DAYS || 30);
 const SENT_BOX = process.env.IMAP_SENT || "INBOX.Sent";
+
+/** 取り込む箱。onlyTo が空でなければ、その宛先を含むメールだけを拾う。 */
+interface Account {
+  label: string;
+  user: string;
+  pass: string;
+  onlyTo: string[];
+  /** 送信箱も読むか（＝本人の返信を正例学習・自動クローズに使う箱かどうか）。 */
+  sent: boolean;
+}
+
+// creative@ は社内共有の箱で、support@gb-jp.com 宛（GBサポートチーム＝保守依頼の窓口）も届く。
+// ただし井上らのやりとりが大半で件数が多いため、丸ごと取り込むと判断すべきカードが埋もれる。
+// CREATIVE_ONLY_TO に書いた宛先のメールだけを拾う（カンマ区切りで増やせる）。未設定なら読まない。
+const CREATIVE_ONLY_TO = (process.env.CREATIVE_ONLY_TO || "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+const CREATIVE_USER = process.env.CREATIVE_IMAP_USER || "";
+const CREATIVE_PASS = process.env.CREATIVE_IMAP_PASSWORD || "";
+
+// creative@ は受信箱のみ読む。「対応済み」判定は本人(kawasaki@)の送信で行うので、
+// creative@ の送信箱を足してもスレッドは閉じられず、重複するだけのため。
+const ACCOUNTS: Account[] = [
+  { label: "kawasaki", user: USER, pass: PASS, onlyTo: [], sent: true },
+  ...(CREATIVE_USER && CREATIVE_PASS && CREATIVE_ONLY_TO.length
+    ? [
+        {
+          label: "creative",
+          user: CREATIVE_USER,
+          pass: CREATIVE_PASS,
+          onlyTo: CREATIVE_ONLY_TO,
+          sent: false,
+        },
+      ]
+    : []),
+];
 // 社長がダッシュボードから登録した「取り込み無視キーワード」。件名/送信元に含めばカード化しない。
 let IGNORE_KEYWORDS: string[] = [];
 function matchesIgnore(from: string, subject: string): boolean {
@@ -127,6 +167,15 @@ function threadBody(text: string): string {
   return `${fresh}\n\n（引用内のインライン回答）\n${inline}`.trim();
 }
 
+/** 添付（実体はBuffer。保存はカードIDが決まってから行う）。 */
+interface Attach {
+  name: string;
+  type: string;
+  size: number;
+  content?: Buffer;
+  rel?: string;
+}
+
 interface Msg {
   from: string;
   fromName: string;
@@ -134,9 +183,34 @@ interface Msg {
   date: string;
   text: string;
   messageId: string;
+  attachments: Attach[];
 }
 
-async function fetchBox(client: ImapFlow, path: string, since: Date): Promise<Msg[]> {
+function addressesIn(field: ParsedMail["to"]): string[] {
+  const arr = Array.isArray(field) ? field : field ? [field] : [];
+  return arr.flatMap((a) => a.value.map((v) => (v.address || "").toLowerCase()));
+}
+
+/**
+ * support@ のような「窓口」に持ち込まれた依頼かどうか。
+ * - 宛先(To)に窓口が入っていれば依頼そのもの（社内からの転送も拾う）
+ * - Cc止まりなら社外から届いたものだけ拾う。自社が社外へ送ったメールは記録用に窓口を
+ *   Ccしていることがあり、それは「返す相手のいない控え」なので拾わない。
+ * ※配送ヘッダ(Delivered-To)は、窓口の配信メンバーである以上どちらにも同じ値が入り
+ *   区別に使えないため見ない。
+ */
+function isForDesk(p: ParsedMail, desks: string[], from: string): boolean {
+  if (addressesIn(p.to).some((a) => desks.includes(a))) return true;
+  const fromOutside = !!MY_DOMAIN && !from.toLowerCase().endsWith(`@${MY_DOMAIN}`);
+  return fromOutside && addressesIn(p.cc).some((a) => desks.includes(a));
+}
+
+async function fetchBox(
+  client: ImapFlow,
+  path: string,
+  since: Date,
+  onlyTo: string[]
+): Promise<Msg[]> {
   const res: Msg[] = [];
   let lock;
   try {
@@ -148,6 +222,8 @@ async function fetchBox(client: ImapFlow, path: string, since: Date): Promise<Ms
     for await (const m of client.fetch({ since }, { source: true, internalDate: true })) {
       const p: ParsedMail = await simpleParser(m.source as Buffer);
       const from = p.from?.value?.[0]?.address || "";
+      // 窓口が指定された箱では、その窓口への依頼以外は読み捨てる
+      if (onlyTo.length && !isForDesk(p, onlyTo, from)) continue;
       const headers = new Map<string, string>();
       for (const k of ["list-unsubscribe", "precedence", "auto-submitted"]) {
         const v = p.headers.get(k);
@@ -160,6 +236,16 @@ async function fetchBox(client: ImapFlow, path: string, since: Date): Promise<Ms
       )
         continue;
       const rawDate = p.date || m.internalDate || new Date();
+      // 添付：素材（画像/PDF/Excel等）が来ているかの判断材料。
+      // 署名ロゴ等の埋め込み画像(related)・ファイル名なしのパートは除外。
+      const attachments: Attach[] = (p.attachments || [])
+        .filter((a) => a.filename && !a.related)
+        .map((a) => ({
+          name: String(a.filename).slice(0, 120),
+          type: a.contentType || "?",
+          size: a.size || 0,
+          content: a.content as Buffer | undefined,
+        }));
       res.push({
         from,
         fromName: p.from?.value?.[0]?.name || from,
@@ -167,6 +253,7 @@ async function fetchBox(client: ImapFlow, path: string, since: Date): Promise<Ms
         date: (rawDate instanceof Date ? rawDate : new Date(rawDate)).toISOString(),
         text: bodyText(p),
         messageId: p.messageId || "",
+        attachments,
       });
     }
   } finally {
@@ -188,22 +275,39 @@ async function main() {
       process.exit(1);
     }
   }
-  console.log(`[imap] 接続: ${USER}@${HOST}:${PORT}（過去${DAYS}日・${WRITE ? "書き込み" : "ドライラン"}）`);
-  const client = new ImapFlow({ host: HOST, port: PORT, secure: true, auth: { user: USER, pass: PASS }, logger: false });
-  try {
-    await client.connect();
-  } catch (e) {
-    console.error(`[imap] 接続失敗: ${(e as Error).message}`);
-    process.exit(1);
-  }
-
+  console.log(`[imap] 接続: ${HOST}:${PORT}（過去${DAYS}日・${WRITE ? "書き込み" : "ドライラン"}）`);
   IGNORE_KEYWORDS = await listIgnoreKeywords();
   if (IGNORE_KEYWORDS.length)
     console.log(`[imap] 無視キーワード ${IGNORE_KEYWORDS.length} 件を適用`);
   const since = new Date(Date.now() - DAYS * 24 * 60 * 60 * 1000);
-  const inbox = await fetchBox(client, "INBOX", since);
-  const sent = await fetchBox(client, SENT_BOX, since);
-  await client.logout();
+
+  const inbox: Msg[] = [];
+  const sent: Msg[] = [];
+  for (const acc of ACCOUNTS) {
+    const scope = acc.onlyTo.length ? `宛先が ${acc.onlyTo.join("/")} のものだけ` : "すべて";
+    console.log(`[imap] ${acc.user}（${scope}）`);
+    const client = new ImapFlow({
+      host: HOST,
+      port: PORT,
+      secure: true,
+      auth: { user: acc.user, pass: acc.pass },
+      logger: false,
+    });
+    try {
+      await client.connect();
+    } catch (e) {
+      console.error(`[imap] ${acc.user} 接続失敗: ${(e as Error).message}`);
+      // 本人の箱が読めないなら中断（対応済み判定が狂う）。補助の箱は落ちても続行。
+      if (acc.sent) process.exit(1);
+      continue;
+    }
+    try {
+      inbox.push(...(await fetchBox(client, "INBOX", since, acc.onlyTo)));
+      if (acc.sent) sent.push(...(await fetchBox(client, SENT_BOX, since, acc.onlyTo)));
+    } finally {
+      await client.logout();
+    }
+  }
 
   // 受信＋送信をスレッド化（正規化件名）。同一メッセージ（自分のCC受信＝受信箱と送信済みの
   // 両方に出るもの等）は messageId で重複排除し、スレッドに同じ本文が二重に並ぶのを防ぐ。
@@ -263,10 +367,24 @@ async function main() {
     needReply++;
     list.push({ subject: last.subject, last: `${last.fromName} <${last.from}>`, count: arr.length, date: last.date.slice(0, 10) });
     if (WRITE) {
-      const thread = arr
-        .map((m) => `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${threadBody(m.text) || "（本文なし）"}`)
-        .join("\n\n---\n\n");
-      const threadSection = `件名: ${last.subject}\n\n${thread}`;
+      // 添付はカードIDが決まってから保存する（vault/_attachments/{id}/ に置き、本文にパスを併記）。
+      // 素材が届いているかは判定の段階1の根拠。画像はAIがパスを開いて実物を確認できる。
+      const buildThread = async (itemId: string): Promise<string> => {
+        const parts: string[] = [];
+        for (const m of arr) {
+          const metas: AttachMeta[] = [];
+          for (const a of m.attachments) {
+            const rel = a.content
+              ? await saveBuffer(itemId, a.name, a.content)
+              : undefined;
+            metas.push({ name: a.name, type: a.type, size: a.size, rel });
+          }
+          parts.push(
+            `【${m.date.slice(0, 16).replace("T", " ")} ${m.fromName}】\n${threadBody(m.text) || "（本文なし）"}${attachBlock(metas)}`
+          );
+        }
+        return `件名: ${last.subject}\n\n${parts.join("\n\n---\n\n")}`;
+      };
       // アクティブ(pending/revision)カードは新着があれば最新に更新
       const active = existing.find(
         (it) =>
@@ -275,7 +393,7 @@ async function main() {
       );
       if (active) {
         if (active.thread_last_id !== last.messageId) {
-          await updateThread(active.id, threadSection, last.messageId);
+          await updateThread(active.id, await buildThread(active.id), last.messageId);
           updated++;
         }
         continue;
@@ -290,14 +408,14 @@ async function main() {
         const lastTime = Date.parse(last.date);
         const cardTime = Date.parse(prior.updatedAt || prior.createdAt || "1970-01-01");
         if (!already && lastTime > cardTime) {
-          await updateThread(prior.id, threadSection, last.messageId, true); // 草案リセット
+          await updateThread(prior.id, await buildThread(prior.id), last.messageId, true); // 草案リセット
           await updateStatus(prior.id, "pending");
           reopened++;
         }
         continue; // 既存カードがあるので新規は作らない（重複防止）
       }
       const id = `mail-${last.date.slice(0, 10)}-${sanitizeId(last.messageId || last.subject)}`;
-      const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
+      const body = `## 元メッセージ\n${await buildThread(id)}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
       const fm: ItemFrontmatter = {
         id,
         source: "gmail",
@@ -310,6 +428,11 @@ async function main() {
         importance: "normal",
         thread_key: key,
         thread_last_id: last.messageId,
+        // スレッドに繋がる下書きを作るのに使う（宛先＝最後に送ってきた相手／件名＝Re:を付ける前）
+        reply_to: last.fromName && last.fromName !== last.from
+          ? `${last.fromName} <${last.from}>`
+          : last.from,
+        reply_subject: last.subject,
       };
       const r = await createItem(fm, body);
       if (r.ok) written++;

@@ -17,9 +17,11 @@
     "fetch:refs": "tsx server/fetch-references.ts",
     "harvest:clients": "tsx server/harvest-client-context.ts",
     "ingest:asana": "tsx server/ingest-asana.ts",
-    "ingest:slack": "tsx server/ingest-slack.ts"
+    "ingest:slack": "tsx server/ingest-slack.ts",
+    "backfill:attach": "tsx server/backfill-attachments.ts"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "googleapis": "^140.0.1",
     "gray-matter": "^4.0.3",

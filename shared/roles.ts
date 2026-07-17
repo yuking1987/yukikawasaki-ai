@@ -153,6 +153,9 @@ export interface ItemFrontmatter {
   snooze_until?: string; // スルー（後で）。この日時までは承認待ち一覧から隠し、過ぎたら自動復活。
   thread_key?: string; // メールスレッドの識別キー（正規化件名）。送信済み検知での自動クローズに使う。
   thread_last_id?: string; // スレッド最新メッセージのID。新着検知（リビング・カード）に使う。
+  // 返信先（スレッドに繋がる下書きを作るのに必要）。最後に相手が送ってきたメールの差出人。
+  reply_to?: string; // 例: "山田太郎 <yamada@example.com>"
+  reply_subject?: string; // 元の件名（Re: を付ける前）。
   thread_updated?: boolean; // 取り込み後にスレッドへ新着があった印。GUIで「🔄新着あり」を表示。
   asks?: Ask[]; // AI→人間への依頼（方針を仰ぐ／調査・作業のお願い）。GUIで回答。
   // 打ち返し草案の生成状態（GUIの「今すぐ生成」用）。generating=生成中／error=失敗。

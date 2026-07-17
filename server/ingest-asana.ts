@@ -10,6 +10,7 @@ import {
   HIGH_IMPORTANCE_KEYWORDS,
   type ItemFrontmatter,
 } from "../shared/roles.ts";
+import { saveFromUrl, attachBlock, type AttachMeta } from "./attachments.ts";
 
 // ============================================================
 // Asana自動取り込み（cronから動かすため MCP でなく REST API を使う）。
@@ -69,6 +70,36 @@ function clean(text: string): string {
 function commentBody(c: { text?: string; html_text?: string }): string {
   const raw = c.html_text ? htmlToText(c.html_text) : c.text || "";
   return clean(raw);
+}
+
+/**
+ * タスクの添付を取得し、実ファイルを保存して本文用ブロックを返す。
+ * 素材が届いているかは打ち返し判定の段階1の根拠。取得/保存に失敗してもメタ情報は残す。
+ */
+export async function collectAsanaAttachments(
+  taskGid: string,
+  itemId: string
+): Promise<string> {
+  try {
+    const atts = await asana<any[]>(
+      `/tasks/${taskGid}/attachments?opt_fields=name,resource_subtype,size,download_url,created_at`
+    );
+    if (!atts?.length) return "";
+    const metas: AttachMeta[] = [];
+    for (const a of atts) {
+      const name = a.name || "(名前なし)";
+      const meta: AttachMeta = {
+        name,
+        type: a.resource_subtype || "?",
+        size: a.size || 0,
+      };
+      if (a.download_url) meta.rel = await saveFromUrl(itemId, name, a.download_url);
+      metas.push(meta);
+    }
+    return attachBlock(metas);
+  } catch {
+    return ""; // 添付が取れなくても本文は活かす
+  }
 }
 
 async function main() {
@@ -184,8 +215,11 @@ async function main() {
     // ※後で説明やコメントが付けば、その時の取り込みで拾う（match無し→情報あり→新規作成）。
     if (!notesClean && comments.length === 0 && !match) continue;
     const lastId = comments.length ? comments[comments.length - 1].gid : t.gid;
+    // 添付（素材が来ているかの判断材料）。実ファイルも保存し、本文にパスを併記する
+    // （AIがそのパスを開いて画像そのものを確認できるようにするため）。取得失敗は無視して続行。
+    const attachSection = await collectAsanaAttachments(t.gid, id);
     const thread =
-      `件名: ${t.name}\n\n【説明欄】\n${notesClean || "（説明なし）"}\n\n` +
+      `件名: ${t.name}\n\n【説明欄】\n${notesClean || "（説明なし）"}${attachSection}\n\n` +
       comments
         .map(
           (c) =>

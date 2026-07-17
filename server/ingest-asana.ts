@@ -32,6 +32,25 @@ async function asana<T = unknown>(pathq: string): Promise<T> {
   return ((await res.json()) as { data: T }).data;
 }
 
+// Asanaのメンションはプレーンtextだと「プロフィールURL」で入るが、html_textでは
+// アンカー内に表示名(@名前)がそのまま入っている（例: <a ...>@sachiko egami</a>）。
+// そこで html_text を使い、アンカーは表示テキストだけ残してタグ除去＝メンションが@名前になる。
+function htmlToText(html: string): string {
+  return (html || "")
+    .replace(/<a\b[^>]*>(.*?)<\/a>/gis, "$1") // アンカーは表示テキストを残す（メンション=@名前）
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|h[1-6]|body|tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // コメント/説明のノイズ（CIY署名・引用）を除去
 const SIG_CUT =
   /^(【人材の定着|={4,}|-{4,}|▲▽|プライバシーマーク|差出人:|送信日時:|宛先:|--\s*$)/;
@@ -45,6 +64,11 @@ function clean(text: string): string {
     out.push(l.replace(/\s+$/, ""));
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 1600);
+}
+// コメント本文：html_textがあれば（メンションを@名前化して）優先、無ければplain text。
+function commentBody(c: { text?: string; html_text?: string }): string {
+  const raw = c.html_text ? htmlToText(c.html_text) : c.text || "";
+  return clean(raw);
 }
 
 async function main() {
@@ -156,7 +180,7 @@ async function main() {
       comments
         .map(
           (c) =>
-            `【${(c.created_at || "").slice(0, 16).replace("T", " ")} ${c.created_by?.name || "?"}】\n${clean(c.text)}`
+            `【${(c.created_at || "").slice(0, 16).replace("T", " ")} ${c.created_by?.name || "?"}】\n${commentBody(c)}`
         )
         .join("\n\n---\n\n");
     const threadSection = thread;

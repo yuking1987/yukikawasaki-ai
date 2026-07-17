@@ -148,6 +148,28 @@ function cleanBody(text: string): string {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// 転送の区切り行。「---------- 転送されたメール ----------」「----- Original Message -----」等。
+// この下は“引用”ではなく依頼の本体なので、捨てずに本文として残す必要がある。
+const FWD_HDR_RE =
+  /^\s*-{2,}\s*(転送されたメール|元のメッセージ|Forwarded [Mm]essage|Original Message)\s*-{2,}\s*$/i;
+
+/**
+ * 転送メールで送られてきた「元メールの中身」。
+ * 転送では依頼の本体が丸ごと引用（>）の中に入るため、cleanBody だけだと
+ * 「下記、転送します！」しか残らず、どの案件の何の依頼か分からなくなる。
+ * ここでは引用記号を外して本体を復元する。
+ */
+function forwardedBody(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const at = lines.findIndex((l) => FWD_HDR_RE.test(l));
+  if (at < 0) return "";
+  const body = lines
+    .slice(at + 1)
+    .map((l) => l.replace(/^\s*>+ ?/, "").replace(/\s+$/, ""));
+  const out = body.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return out.length > 4000 ? `${out.slice(0, 4000)}\n…（以下略）` : out;
+}
+
 // 相手が引用文の中に ⇒/→ で書き込んだ「インライン回答（赤字返信）」を、引用ヘッダ以降も含め全文から拾う。
 function inlineAnswers(text: string): string {
   const picked: string[] = [];
@@ -161,6 +183,9 @@ function inlineAnswers(text: string): string {
 // 引用内インラインにある）場合は、⇒/→ のインライン回答を補って回答内容を可視化する。
 function threadBody(text: string): string {
   const fresh = cleanBody(text);
+  // 転送なら、転送元の中身こそが依頼の本体。書き添えの一言と併せて必ず残す。
+  const fwd = forwardedBody(text);
+  if (fwd) return `${fresh}\n\n（転送された元メール）\n${fwd}`.trim();
   if (fresh.replace(/\s/g, "").length >= 140) return fresh;
   const inline = inlineAnswers(text);
   if (!inline) return fresh;

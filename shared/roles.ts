@@ -41,6 +41,19 @@ export const TYPES = [
 ] as const;
 export type ItemType = (typeof TYPES)[number];
 
+/**
+ * 蒸留の提案カード（人格・文体・案件文脈）。
+ * 承認すると対象ファイルへ「追記で反映」する＝返信カードと違い「承認」に実処理がある。
+ * 返信カードは承認しても閉じるだけ（学習・自動クローズは本人の実返信検知で自動実行）。
+ */
+export const PROPOSAL_TYPES: ItemType[] = [
+  "persona_proposal",
+  "tone_proposal",
+  "project_context_proposal",
+];
+export const isProposalType = (t: ItemType): boolean =>
+  PROPOSAL_TYPES.includes(t);
+
 export const TYPE_LABELS: Record<ItemType, string> = {
   reply: "打ち返し",
   design: "デザイン",
@@ -51,7 +64,11 @@ export const TYPE_LABELS: Record<ItemType, string> = {
   project_context_proposal: "案件文脈ドラフト",
 };
 
-/** 承認ステータス。revision=要再考 / done=対応済み（対応不要・自分で対応した）。 */
+/**
+ * 状態。内部の値はそのまま（データ互換のため）だが、人間向けの表示は2つに集約する：
+ *   対応待ち … pending（＋revision=再生成中は対応待ちの一覧に混ぜて表示）
+ *   対応済み … approved / rejected / done を統合（＝処理が終わったもの）
+ */
 export const STATUSES = [
   "pending",
   "approved",
@@ -62,10 +79,10 @@ export const STATUSES = [
 export type Status = (typeof STATUSES)[number];
 
 export const STATUS_LABELS: Record<Status, string> = {
-  pending: "承認待ち",
-  approved: "承認済み",
-  rejected: "却下",
-  revision: "要再考",
+  pending: "対応待ち",
+  approved: "対応済み",
+  rejected: "対応済み",
+  revision: "再生成中",
   done: "対応済み",
 };
 

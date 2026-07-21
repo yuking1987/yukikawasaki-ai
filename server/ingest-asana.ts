@@ -1,9 +1,15 @@
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { ensureWritableForCli, recordSync, mergeAvatars } from "./vault.ts"; // .env読込＋安全検査
 import {
   createItem,
   listItems,
   updateStatus,
   updateThread,
+  appendReplyExample,
+  appendDraftVsSent,
+  readItem,
+  extractDraft,
 } from "./items.ts";
 import {
   routeAssignee,
@@ -11,6 +17,7 @@ import {
   type ItemFrontmatter,
 } from "../shared/roles.ts";
 import { saveFromUrl, attachBlock, detailOf, type AttachMeta } from "./attachments.ts";
+import { matchClientLabel } from "./clients.ts";
 
 // ============================================================
 // Asana自動取り込み（cronから動かすため MCP でなく REST API を使う）。
@@ -52,10 +59,17 @@ function htmlToText(html: string): string {
     .trim();
 }
 
-// コメント/説明のノイズ（CIY署名・引用）を除去
+// コメント/説明のノイズ（CIY署名・引用・自動送信フッタ）を除去
+// ※装飾の区切り線（----/====）単体はカット条件にしない。トコトン等の定型通知は
+//   区切り線の"内側"に依頼本文（◇項目・①②…）が入っており、最初の線で切ると
+//   本文が丸ごと消える（実例: #105910 バナー削除依頼の概要が空になった）。
+//   署名・フッタは文字マーカーで確実に切れる（人材の定着/プライバシーマーク=CIY署名、
+//   このメールは…自動送信=トコトン等のフッタ、差出人:/送信日時:=引用ヘッダ）。
 const SIG_CUT =
-  /^(【人材の定着|={4,}|-{4,}|▲▽|プライバシーマーク|差出人:|送信日時:|宛先:|--\s*$)/;
-function clean(text: string): string {
+  /^(【人材の定着|▲▽|プライバシーマーク|差出人:|送信日時:|宛先:|--\s*$|[＊*※•・]?\s*このメールは|.*トコトンシステムから自動送信)/;
+// 純粋な区切り線（ハイフン/イコール/罫線のみの行）判定：本文末尾に残った装飾線を落とす用
+const DIVIDER_ONLY = /^[-=＝ー─―]{2,}\s*$/;
+export function clean(text: string): string {
   const lines = (text || "").split(/\r?\n/);
   let cut = lines.findIndex((l) => SIG_CUT.test(l.trim()));
   if (cut === -1) cut = lines.length;
@@ -63,6 +77,10 @@ function clean(text: string): string {
   for (const l of lines.slice(0, cut)) {
     if (l.trim().startsWith(">")) continue;
     out.push(l.replace(/\s+$/, ""));
+  }
+  // フッタ直前などに残った装飾区切り線・空行を末尾から落とす
+  while (out.length && (DIVIDER_ONLY.test(out[out.length - 1].trim()) || out[out.length - 1].trim() === "")) {
+    out.pop();
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 1600);
 }
@@ -182,7 +200,9 @@ async function main() {
     updated = 0,
     closed = 0,
     reopened = 0,
-    mentions = 0;
+    mentions = 0,
+    learned = 0,
+    diffed = 0;
 
   for (const { t, mentionedOnly } of queue) {
     const key = `asana:${t.gid}`;
@@ -244,6 +264,42 @@ async function main() {
           updated++;
         }
         if (gbReplied) {
+          // 本人の最後コメントを②お手本(_memory/replies.md)へ蓄積。
+          // 【食い違い学習】カードにAIの草案が付いていたら、その草案と本人の最後コメントを
+          // 突き合わせて _memory/draft-vs-sent.md に残す（メール/Slackと同じ形で学ぶ）。
+          const sent = commentBody(lastComment);
+          const prevIn = [...comments.slice(0, comments.length - 1)]
+            .reverse()
+            .find((c) => !/サポートGB|川崎|kawasaki|yuki kawasaki/i.test(c.created_by?.name || ""));
+          const incoming = prevIn ? commentBody(prevIn) : "";
+          if (sent) {
+            const r2 = await appendReplyExample({
+              messageId: `asana-${lastComment.gid}`,
+              when: (lastComment.created_at || "").slice(0, 16).replace("T", " "),
+              subject: (t.name || "(無題)").slice(0, 80),
+              project: match.project,
+              audience: match.audience,
+              incoming,
+              reply: sent,
+            });
+            if (r2.recorded) learned++;
+          }
+          const full = await readItem(match.id);
+          const draft = full ? extractDraft(full.body) : "";
+          if (sent && draft && !draft.includes("AIが草案を作成予定")) {
+            const d = await appendDraftVsSent({
+              messageId: `asana-${lastComment.gid}`,
+              when: (lastComment.created_at || "").slice(0, 16).replace("T", " "),
+              subject: (t.name || "(無題)").slice(0, 80),
+              cardId: match.id,
+              project: match.project,
+              audience: match.audience,
+              incoming,
+              draft,
+              sent,
+            });
+            if (d.recorded) diffed++;
+          }
           // GB側が最後に返信 → 対応済みに自動クローズ（承認待ちから消える）
           await updateStatus(match.id, "done");
           closed++;
@@ -270,10 +326,13 @@ async function main() {
       ? `> ※このカードは「川崎さんがメンションされた」タスクです（担当は別の人）。社内向けの返信・確認として草案します。\n\n`
       : "";
     const body = `## 元メッセージ\n${mentionNote}${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
+    // 本文（説明欄＋コメント）に相手のドメイン/URLが出ていればクライアント名を照合。
+    const clientLabel = matchClientLabel({ text: threadSection });
     const fm: ItemFrontmatter = {
       id,
       source: "asana",
       project: proj,
+      project_label: clientLabel || undefined,
       audience: mentionedOnly ? "internal" : "external",
       type: "reply",
       status: "pending",
@@ -296,12 +355,23 @@ async function main() {
   }
 
   console.log(
-    `[asana] 担当 ${assigned.length} / メンション候補 ${followed.length} → 新規 ${written}（うちメンション ${mentions}） / スレッド更新 ${updated} / 対応済みクローズ ${closed} / 再オープン ${reopened}`
+    `[asana] 担当 ${assigned.length} / メンション候補 ${followed.length} → 新規 ${written}（うちメンション ${mentions}） / スレッド更新 ${updated} / 対応済みクローズ ${closed} / 再オープン ${reopened} / 正例 ${learned} / 食い違い ${diffed}`
   );
   recordSync("asana"); // 最終取り込み時刻を記録（画面表示用）
 }
 
-main().catch((e) => {
-  console.error("[asana] エラー:", (e as Error).message);
-  process.exit(1);
-});
+// 直接実行（npm run ingest:asana / cron）のときだけ取り込みを走らせる。
+// 他モジュールから clean 等を import しても本体が動かないようにする（バックフィル等で再利用するため）。
+const isDirectRun = (() => {
+  try {
+    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isDirectRun) {
+  main().catch((e) => {
+    console.error("[asana] エラー:", (e as Error).message);
+    process.exit(1);
+  });
+}

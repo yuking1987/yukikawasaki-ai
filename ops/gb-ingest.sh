@@ -27,4 +27,11 @@ if [ "${GB_AUTO_DRAFT:-1}" != "0" ]; then
   echo "--- draft ---"
   bash ops/gb-draft.sh
 fi
+# 草案 vs 実返信の「要学習」が一定数たまったら、共通ルールに自動で昇華する（安全枠付き）。
+# gb-distill.sh 側で「閾値未満なら即終了」するので、たまるまではAIを起動しない＝ムダなコストなし。
+# 昇華を止めたいときは launchd の環境変数 GB_AUTO_DISTILL=0 にする。
+if [ "${GB_AUTO_DISTILL:-1}" != "0" ]; then
+  echo "--- distill ---"
+  bash ops/gb-distill.sh
+fi
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') ingest 完了 ====="

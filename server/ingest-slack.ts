@@ -5,6 +5,9 @@ import {
   updateStatus,
   updateThread,
   appendReplyExample,
+  appendDraftVsSent,
+  readItem,
+  extractDraft,
 } from "./items.ts";
 import {
   routeAssignee,
@@ -12,6 +15,8 @@ import {
   type ItemType,
   type ItemFrontmatter,
 } from "../shared/roles.ts";
+import { saveFromUrl, attachBlock, detailOf, type AttachMeta } from "./attachments.ts";
+import { matchClientLabel } from "./clients.ts";
 
 // ============================================================
 // Slack自動取り込み（cronから動かすため MCP でなく Web API を使う）。
@@ -60,6 +65,19 @@ async function loadUsers(): Promise<Map<string, string>> {
   return map;
 }
 
+// Slackの添付ファイル（conversations.history/replies が messages[].files で返す）。
+// 実体のダウンロードは url_private_download に Bearer トークンを付けて取得する。
+type SlackFile = {
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private_download?: string;
+  url_private?: string;
+  mode?: string; // "hosted"=通常ファイル。"tombstone"(削除済)等は落とせない
+};
+
 type SlackMsg = {
   type?: string;
   subtype?: string;
@@ -71,6 +89,7 @@ type SlackMsg = {
   thread_ts?: string;
   reply_count?: number;
   latest_reply?: string; // スレッド最新返信のts（差分判定に使う）
+  files?: SlackFile[];
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -120,16 +139,21 @@ async function paged(
   return out;
 }
 
-// 実体のある人間メッセージか（join通知・bot(電話代行等)・システムは除外）。
-function isReal(m: SlackMsg | undefined): boolean {
-  return (
-    !!m &&
-    m.type === "message" &&
-    !m.subtype &&
-    !m.bot_id &&
-    typeof m.text === "string" &&
-    m.text.trim().length > 0
+// 実際に落とせる添付があるか（削除済み tombstone やURLの無いものは除外）。
+function hasFiles(m: SlackMsg | undefined): boolean {
+  return !!m?.files?.some(
+    (f) => f && f.mode !== "tombstone" && !!(f.url_private_download || f.url_private)
   );
+}
+
+// 実体のある人間メッセージか（join通知・bot(電話代行等)・システムは除外）。
+// 文章が空でも「添付だけの投稿」（画像で修正指示が来るケース）は拾う。
+// ファイル添付は subtype="file_share" が付くことがあるため、その場合だけは許可する。
+function isReal(m: SlackMsg | undefined): boolean {
+  if (!m || m.type !== "message" || m.bot_id) return false;
+  if (m.subtype && m.subtype !== "file_share") return false;
+  const hasText = typeof m.text === "string" && m.text.trim().length > 0;
+  return hasText || hasFiles(m);
 }
 
 // Slack記法をテキスト整形（メンション/リンクを読みやすく、機微ノイズを軽く落とす）。
@@ -154,10 +178,36 @@ function who(m: SlackMsg): string {
   if (m.user === ME) return "川崎さん";
   return USERS.get(m.user || "") || m.user || m.username || "メンバー";
 }
-function threadOf(msgs: SlackMsg[]): string {
-  return msgs
-    .map((m) => `【${whenOf(m.ts)} ${who(m)}】\n${clean(m.text || "")}`)
-    .join("\n\n---\n\n");
+/**
+ * メッセージの添付を実ファイル保存し、本文用のメタ配列を返す。
+ * 素材（画像/Excel等）が来ているかは打ち返し判定の段階1の根拠。
+ * Slackのファイルは url_private_download に Bearer トークンを付けて取得する。
+ * 取得/保存に失敗しても、名前・種類・サイズのメタは本文に残す。
+ */
+async function saveFiles(itemId: string, files?: SlackFile[]): Promise<AttachMeta[]> {
+  const metas: AttachMeta[] = [];
+  for (const f of files || []) {
+    if (f.mode === "tombstone") continue; // 削除済みは落とせない
+    const name = f.name || f.title || "(名前なし)";
+    const meta: AttachMeta = { name, type: f.mimetype || f.filetype || "?", size: f.size || 0 };
+    const url = f.url_private_download || f.url_private;
+    if (url) meta.rel = await saveFromUrl(itemId, name, url, { Authorization: `Bearer ${TOKEN}` });
+    // Excelは中身（文字＋貼り込み画像）までほどく。修正指示は画像にあることが多いため。
+    if (meta.rel) meta.detail = await detailOf(itemId, name);
+    metas.push(meta);
+  }
+  return metas;
+}
+
+// スレッド本文を組み立てる。各メッセージの添付は itemId 配下に保存し、本文にパスを併記する
+// （AIがそのパスを開いて画像そのものを確認できるようにするため）。
+async function threadOf(msgs: SlackMsg[], itemId: string): Promise<string> {
+  const parts: string[] = [];
+  for (const m of msgs) {
+    const metas = await saveFiles(itemId, m.files);
+    parts.push(`【${whenOf(m.ts)} ${who(m)}】\n${clean(m.text || "") || "（本文なし）"}${attachBlock(metas)}`);
+  }
+  return parts.join("\n\n---\n\n");
 }
 function titleOf(raw: string): string {
   // 生テキストからメンション(<@Uxxx>)・broadcast・リンク記法を確実に外し、最初の実質行を件名に。
@@ -216,7 +266,8 @@ async function main() {
     updated = 0,
     closed = 0,
     reopened = 0,
-    learned = 0;
+    learned = 0,
+    diffed = 0;
   let hadError = false;
   const processedKeys = new Set<string>(); // 今回のhistoryで確認したスレッドのthread_key
   const failedChannels = new Set<string>(); // 履歴取得に失敗したch（追従ループでも今回はskip）
@@ -297,7 +348,8 @@ async function main() {
       const lastId = last.ts;
       const id = `slack-${ch}-${threadTs.replace(".", "-")}`;
       const gbReplied = last.user === ME; // 本人が最後＝対応済みの合図
-      const threadSection = threadOf(real);
+      // 添付は保存先IDが要る。既存カードがあればそのID、無ければ新規IDの配下へ保存する。
+      const threadSection = await threadOf(real, match ? match.id : id);
 
       if (match) {
         if (match.status === "pending" || match.status === "revision") {
@@ -306,6 +358,28 @@ async function main() {
             updated++;
           }
           if (gbReplied) {
+            // 【食い違い学習】カードにAIの草案が付いていたら、その草案と本人が実際に
+            // 打ち返した最後の発言を突き合わせて _memory/draft-vs-sent.md に残す。
+            // ＝草案を無視して別の解釈/言い回しで返したケースをメールと同じ形で学ぶ。
+            const full = await readItem(match.id);
+            const draft = full ? extractDraft(full.body) : "";
+            if (draft && !draft.includes("AIが草案を作成予定")) {
+              const prevIn = [...real.slice(0, real.length - 1)]
+                .reverse()
+                .find((m) => m.user !== ME);
+              const d = await appendDraftVsSent({
+                messageId: `slack-${ch}-${last.ts}`,
+                when: whenOf(last.ts),
+                subject: `Slack ${titleOf(top.text || "")}`,
+                cardId: match.id,
+                project: match.project,
+                audience: match.audience,
+                incoming: prevIn ? clean(prevIn.text || "") : "",
+                draft,
+                sent: clean(last.text || ""),
+              });
+              if (d.recorded) diffed++;
+            }
             await updateStatus(match.id, "done"); // 本人が返した→承認待ちから消す
             closed++;
           }
@@ -331,14 +405,20 @@ async function main() {
         : "reply";
       const body = `## 元メッセージ\n${threadSection}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
       const tsNoDot = threadTs.replace(".", "");
+      // スレッド本文に相手のドメイン/URLが出ていればクライアント名を照合。
+      const clientLabel = matchClientLabel({ text: threadSection });
       const fm: ItemFrontmatter = {
         id,
         source: "slack",
         project: "未分類",
+        project_label: clientLabel || undefined,
         audience: "internal", // Slackは社内チャンネル中心→社内文体で草案
         type,
         status: "pending",
-        title: titleOf(top.text || ""),
+        // 画像だけの投稿（文章なし）は件名が空になるので、添付ファイル名を件名に使う。
+        title: titleOf(top.text || "") === "(無題)" && top.files?.[0]
+          ? `📎 ${(top.files[0].name || top.files[0].title || "添付ファイル").slice(0, 78)}`
+          : titleOf(top.text || ""),
         createdAt: new Date(Number(top.ts) * 1000).toISOString(),
         importance: HIGH_IMPORTANCE_KEYWORDS.some((k) => alltext.includes(k))
           ? "high"
@@ -372,7 +452,7 @@ async function main() {
     if (!real2.length) continue;
     const last2 = real2[real2.length - 1];
     if (it.thread_last_id === last2.ts) continue;
-    await updateThread(it.id, threadOf(real2), last2.ts);
+    await updateThread(it.id, await threadOf(real2, it.id), last2.ts);
     updated++;
     if (last2.user === ME) {
       await updateStatus(it.id, "done");
@@ -381,7 +461,7 @@ async function main() {
   }
 
   console.log(
-    `[slack] ${CHANNELS.length}ch → 新規 ${written} / スレッド更新 ${updated} / クローズ ${closed} / 再オープン ${reopened} / 正例 ${learned}`
+    `[slack] ${CHANNELS.length}ch → 新規 ${written} / スレッド更新 ${updated} / クローズ ${closed} / 再オープン ${reopened} / 正例 ${learned} / 食い違い ${diffed}`
   );
   if (hadError)
     console.warn("[slack] 一部の取得に失敗しました（次回巡回で再取得されます）。");

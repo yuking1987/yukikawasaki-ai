@@ -15,6 +15,9 @@ _cache/
 service-account*.json
 secrets/
 
+# 編集前バックアップ（.env.bak 等、資格情報ごと控えることがあるため追跡しない）
+*.bak
+
 # OS/エディタ
 .DS_Store
 *.log

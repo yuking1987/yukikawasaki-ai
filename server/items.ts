@@ -13,7 +13,7 @@ import type {
   ItemFrontmatter,
   Status,
 } from "../shared/roles.ts";
-import { STATUSES } from "../shared/roles.ts";
+import { STATUSES, PROPOSAL_TYPES } from "../shared/roles.ts";
 
 // ============================================================
 // 保存役（唯一の書き込み担当）。
@@ -217,6 +217,32 @@ export async function setSnooze(
   return { ok: true };
 }
 
+/**
+ * 送信元(reply_to)が空の古いカードに、取り込み時に拾った送信元を後から埋める。
+ * 既に入っているカードは触らない（上書きしない）。
+ * ＝「今後カード化しない」ボタンが古いカードでも出るようにするための埋め直し。
+ */
+export async function backfillReplyTo(
+  id: string,
+  replyTo: string
+): Promise<boolean> {
+  if (!replyTo) return false;
+  const current = await readItem(id);
+  if (!current || current.reply_to) return false; // 既存値は尊重（上書きしない）
+  const { body, ...fm } = current;
+  const next: ItemFrontmatter = {
+    ...fm,
+    reply_to: replyTo,
+    updatedAt: new Date().toISOString(),
+  };
+  await fsp.writeFile(
+    path.join(itemsDir(), `${id}.md`),
+    matter.stringify(body, fmData(next as unknown as Record<string, unknown>)),
+    "utf8"
+  );
+  return true;
+}
+
 /** 学び候補を items/_rule_candidates/{id}.md に保存（10_rules/へは書かない）。 */
 export async function saveRuleCandidate(
   id: string,
@@ -356,11 +382,38 @@ export async function addIgnoreKeyword(
   return { ok: true };
 }
 
-export const PROPOSAL_TYPES = [
-  "persona_proposal",
-  "tone_proposal",
-  "project_context_proposal",
-];
+/** 無視キーワードを1件外す（大文字小文字を無視して一致する行を削除）。解除ボタン用。 */
+export async function removeIgnoreKeyword(
+  kw: string
+): Promise<{ ok: boolean; msg?: string }> {
+  const k = (kw || "").trim().toLowerCase();
+  if (!k) return { ok: false, msg: "キーワードが空です" };
+  const file = path.join(VAULT_PATH, IGNORE_REL);
+  if (!assertNotSymlink(file))
+    return { ok: false, msg: "無視リストがリンクのため拒否しました" };
+  let content = "";
+  try {
+    content = await fsp.readFile(file, "utf8");
+  } catch {
+    return { ok: true }; // ファイルが無い＝既に無い
+  }
+  // コメント行（#始まり）は残し、値の行だけを対象に一致削除する
+  const kept = content
+    .split(/\r?\n/)
+    .filter((line) => {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) return true;
+      return t.toLowerCase() !== k;
+    });
+  await fsp.writeFile(file, kept.join("\n"), "utf8");
+  return { ok: true };
+}
+
+// PROPOSAL_TYPES は shared/roles.ts に一本化（返信カードと提案カードの分岐で両側から参照）。
+// index.ts など items.ts 経由の参照のために、shared から直接 re-export する
+// （16行目の import は当ファイル内での利用用。bare な `export { PROPOSAL_TYPES }` だと
+//  import 済みの同名と二重宣言になり TS2440/2395 になるため、re-export 構文にする）。
+export { PROPOSAL_TYPES } from "../shared/roles.ts";
 
 /**
  * Vault相対パス rel の全セグメント（各ancestorディレクトリ＋最終ファイル）が
@@ -487,6 +540,78 @@ export async function appendReplyExample(rec: {
   entry += `### 川崎さんの実際の返信（正例）\n${rec.reply.trim()}\n`;
   await fsp.appendFile(file, entry, "utf8");
   return { recorded: true };
+}
+
+/**
+ * 2つの文章の似ている度合い（0〜1）。文字bigramのDice係数。
+ * 依存を増やさず、軽い（数百文字なら一瞬）。空白は無視して比較する。
+ * 1に近い＝ほぼ同じ（＝少し言い回しを変えただけ）、0に近い＝別物（＝解釈が変わった）。
+ */
+export function textSimilarity(a: string, b: string): number {
+  const norm = (s: string) => (s || "").replace(/\s+/g, "");
+  const grams = (s: string) => {
+    const set = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      set.set(g, (set.get(g) || 0) + 1);
+    }
+    return set;
+  };
+  const x = norm(a);
+  const y = norm(b);
+  if (!x.length && !y.length) return 1;
+  if (x.length < 2 || y.length < 2) return x === y ? 1 : 0;
+  const gx = grams(x);
+  const gy = grams(y);
+  let inter = 0;
+  for (const [g, cx] of gx) inter += Math.min(cx, gy.get(g) || 0);
+  const total = x.length - 1 + (y.length - 1);
+  return total > 0 ? (2 * inter) / total : 0;
+}
+
+/**
+ * 「食い違い帳」への記録: AIが用意した草案 vs あなたが実際に送った返信のペアを
+ * _memory/draft-vs-sent.md に貯める。ここが人格学習の"最重要"データ
+ * （AIの判断と本人の解釈の差が、そのまま出る場所）。
+ * - 似ている度合いでタグ付け: 0.7以上＝「微修正」、未満＝「要学習」。
+ * - messageId で重複を防ぐ（取り込みは冪等）。
+ * - 草案がプレースホルダ（未作成）なら呼ばない前提（呼び出し側で除外）。
+ */
+export async function appendDraftVsSent(rec: {
+  messageId: string;
+  when: string;
+  subject: string;
+  cardId?: string;
+  project?: string;
+  audience?: string;
+  domain?: string;
+  incoming?: string;
+  draft: string; // AIが用意した草案
+  sent: string; // 実際に送った返信
+}): Promise<{ recorded: boolean; similarity: number; tag: string }> {
+  const sim = textSimilarity(rec.draft, rec.sent);
+  const tag = sim >= 0.7 ? "微修正" : "要学習";
+  const dir = path.join(VAULT_PATH, WRITABLE_DIRS.memory);
+  await ensureDir(dir);
+  const file = path.join(dir, "draft-vs-sent.md");
+  if (!assertNotSymlink(file)) return { recorded: false, similarity: sim, tag };
+  const marker = `<!-- mid:${rec.messageId} -->`;
+  if (rec.messageId && fs.existsSync(file)) {
+    const existing = await fsp.readFile(file, "utf8");
+    if (existing.includes(marker)) return { recorded: false, similarity: sim, tag };
+  }
+  const meta = [rec.domain, rec.project, rec.audience].filter(Boolean).join(" / ");
+  const pct = Math.round(sim * 100);
+  let entry = `\n## ${rec.when} | ${rec.subject}${meta ? ` | ${meta}` : ""}\n`;
+  entry += `${marker}\n`;
+  if (rec.cardId) entry += `<!-- card:${rec.cardId} -->\n`;
+  entry += `- 分類: ${tag}（類似度 ${pct}%）\n`;
+  if (rec.incoming && rec.incoming.trim())
+    entry += `### 相手からの直前メッセージ\n${rec.incoming.trim()}\n`;
+  entry += `### AIの草案\n${rec.draft.trim()}\n`;
+  entry += `### 川崎さんが実際に送った返信\n${rec.sent.trim()}\n`;
+  await fsp.appendFile(file, entry, "utf8");
+  return { recorded: true, similarity: sim, tag };
 }
 
 /**

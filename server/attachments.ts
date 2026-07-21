@@ -78,6 +78,10 @@ export async function saveFromUrl(
     if (!res.ok) return undefined;
     const len = Number(res.headers.get("content-length") || 0);
     if (len && len > MAX_BYTES) return undefined;
+    // 権限不足だと本体でなくログインHTMLが返ることがある（Slackのurl_private等）。
+    // HTMLでない添付を要求しているのにtext/htmlが返ったら、ゴミ保存を避けて諦める。
+    const ctype = (res.headers.get("content-type") || "").toLowerCase();
+    if (ctype.includes("text/html") && !/\.html?$/i.test(fileName)) return undefined;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length === 0 || buf.length > MAX_BYTES) return undefined;
     await fsp.mkdir(attachDirFor(itemId), { recursive: true });
@@ -94,7 +98,7 @@ export async function saveFromUrl(
  * AIがそれを開いて実物を見た上で工数を見立てられるようにする。Excel以外・失敗時は undefined。
  */
 export async function detailOf(itemId: string, name: string): Promise<string | undefined> {
-  if (!/\.xlsx?$|\.xlsm$/i.test(name)) return undefined;
+  if (!/\.(xlsx|xlsm)$/i.test(name)) return undefined; // 旧形式(.xls)は読めないので対象外
   const abs = path.join(attachDirFor(itemId), safeFileName(name));
   if (!fs.existsSync(abs)) return undefined;
   const outDir = path.join(attachDirFor(itemId), `${safeFileName(name)}_中身`);

@@ -3,8 +3,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { appendDraft } from "./mail-draft.ts";
 import matter from "gray-matter";
+import { sparkUrl } from "./spark.ts";
+import { buildDailyReport } from "./daily-report.ts";
 import {
   VAULT_PATH,
   REQUIRED_DIRS,
@@ -33,6 +34,7 @@ import {
   appendGlobalRule,
   listIgnoreKeywords,
   addIgnoreKeyword,
+  removeIgnoreKeyword,
 } from "./items.ts";
 import {
   SOURCES,
@@ -185,7 +187,12 @@ app.get(
   h(async (req, res) => {
     const item = await readItem(req.params.id);
     if (!item) return res.status(404).json({ error: "見つかりません" });
-    res.json({ item });
+    // メールカードには「Sparkで開く」リンクを添えて返す（Message-IDから組み立て・保存はしない）
+    const spark =
+      item.source === "gmail" && item.thread_last_id
+        ? sparkUrl(process.env.IMAP_USER || "", item.thread_last_id)
+        : undefined;
+    res.json({ item: spark ? { ...item, spark_url: spark } : item });
   })
 );
 
@@ -314,7 +321,22 @@ app.patch(
     if (!answer) return res.status(400).json({ error: "回答が空です" });
     const r = await answerAsk(req.params.id, req.params.askId, answer);
     if (!r.ok) return res.status(r.code).json({ error: r.msg });
-    res.json({ ok: true });
+    // 生成前ゲート：確認がすべて回答済みになったら、その回答を使って草案を自動で作り直す。
+    // 未解決の確認が残っていれば起動しない（＝新たな未解決が出れば再び人待ちで止まる＝機械ループしない）。
+    let regenerating = false;
+    const after = await readItem(req.params.id);
+    if (
+      after &&
+      after.status === "pending" &&
+      after.draft_status !== "generating" &&
+      Array.isArray(after.asks) &&
+      after.asks.length > 0 &&
+      after.asks.every((a) => a.resolved)
+    ) {
+      const g = await startDraftGeneration(after);
+      regenerating = g.ok && !g.already;
+    }
+    res.json({ ok: true, regenerating });
   })
 );
 
@@ -495,43 +517,35 @@ app.post(
   })
 );
 
-// --- メールの返信「下書き」をIMAPに作成（送信はしない・スレッドに繋がる） ---
-app.post(
-  "/api/items/:id/mail-draft",
-  h(async (req, res) => {
-    const item = await readItem(req.params.id);
-    if (!item) return res.status(404).json({ error: "見つかりません" });
-    if (item.source !== "gmail")
-      return res.status(400).json({ error: "メールのカードではありません。" });
-    const text = String(req.body?.text ?? "").trim();
-    if (!text) return res.status(400).json({ error: "本文が空です。" });
-    // 宛先：frontmatterのreply_to優先。無ければGUIから渡された宛先を使う。
-    const to = String(req.body?.to ?? item.reply_to ?? "").trim();
-    if (!to)
-      return res.status(400).json({
-        error: "返信先が不明です（このカードには宛先が保存されていません）。宛先を指定してください。",
-        needTo: true,
-      });
-    const baseSubject = String(item.reply_subject || item.title || "").trim();
-    const subject = /^re:/i.test(baseSubject) ? baseSubject : `Re: ${baseSubject}`;
-    // これまでのやり取り（## 元メッセージ）を引用として本文末尾に付ける
-    const thread = extractSection(item.body, "元メッセージ");
-    const quoted = thread
-      ? `\n\n----- 元のメッセージ -----\n${thread
-          .split("\n")
-          .map((l) => (l.trim() ? `> ${l}` : ">"))
-          .join("\n")}`
-      : "";
-    const r = await appendDraft({
-      to,
-      subject,
-      body: `${text}${quoted}`,
-      inReplyTo: item.thread_last_id,
+// --- 1件分の草案生成をヘッドレス起動（「今すぐ生成」と「確認への回答後の自動再生成」で共用）。 ---
+// draft_status を generating にし、gb-draft-one.sh を detached で起動する。送信・実行はしない（草案だけ）。
+async function startDraftGeneration(
+  item: Awaited<ReturnType<typeof readItem>> & object
+): Promise<{ ok: true; already?: boolean } | { ok: false; code: number; msg: string }> {
+  if (item.draft_status === "generating") return { ok: true, already: true };
+  // 生成中フラグを立てる（本文は変えない）。GUIはこれを見て「生成中…」を表示。
+  const r = await updateItemBody(item.id, item.body, {
+    draft_status: "generating",
+    draft_started_at: new Date().toISOString(),
+  });
+  if (!r.ok) return { ok: false, code: r.code, msg: r.msg };
+  try {
+    const script = path.join(process.cwd(), "ops", "gb-draft-one.sh");
+    const logDir = path.join(process.cwd(), "ops", "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const out = fs.openSync(path.join(logDir, "draft-one.out.log"), "a");
+    const child = spawn("bash", [script, item.id], {
+      detached: true,
+      stdio: ["ignore", out, out],
     });
-    if (!r.ok) return res.status(502).json({ error: `下書きの作成に失敗: ${r.msg}` });
-    res.json({ ok: true, box: r.box, to, subject });
-  })
-);
+    child.unref();
+  } catch (e) {
+    // 起動自体に失敗したらフラグをerrorに戻す
+    await updateItemBody(item.id, item.body, { draft_status: "error" });
+    return { ok: false, code: 500, msg: `生成の起動に失敗: ${(e as Error).message}` };
+  }
+  return { ok: true };
+}
 
 // --- 打ち返し草案を「今すぐ生成」。draft_statusをgeneratingにし、1件分の生成を非同期起動。 ---
 app.post(
@@ -539,32 +553,9 @@ app.post(
   h(async (req, res) => {
     const item = await readItem(req.params.id);
     if (!item) return res.status(404).json({ error: "見つかりません" });
-    if (item.draft_status === "generating")
-      return res.json({ ok: true, already: true });
-    // 生成中フラグを立てる（本文は変えない）。GUIはこれを見て「生成中…」を表示。
-    const r = await updateItemBody(item.id, item.body, {
-      draft_status: "generating",
-      draft_started_at: new Date().toISOString(),
-    });
+    const r = await startDraftGeneration(item);
     if (!r.ok) return res.status(r.code).json({ error: r.msg });
-    // ローカルの Claude Code を1件分だけヘッドレス起動（送信・実行はしない・草案だけ）。
-    // detachedで投げっぱなし。完了/失敗でスクリプト側が draft_status を消す/errorにする。
-    try {
-      const script = path.join(process.cwd(), "ops", "gb-draft-one.sh");
-      const logDir = path.join(process.cwd(), "ops", "logs");
-      fs.mkdirSync(logDir, { recursive: true });
-      const out = fs.openSync(path.join(logDir, "draft-one.out.log"), "a");
-      const child = spawn("bash", [script, item.id], {
-        detached: true,
-        stdio: ["ignore", out, out],
-      });
-      child.unref();
-    } catch (e) {
-      // 起動自体に失敗したらフラグをerrorに戻す
-      await updateItemBody(item.id, item.body, { draft_status: "error" });
-      return res.status(500).json({ error: `生成の起動に失敗: ${(e as Error).message}` });
-    }
-    res.status(202).json({ ok: true });
+    res.status(r.already ? 200 : 202).json({ ok: true, ...(r.already ? { already: true } : {}) });
   })
 );
 
@@ -634,6 +625,14 @@ app.get(
   })
 );
 
+// --- 学びの日報（食い違い→学び。読み取り専用） ---
+app.get(
+  "/api/daily-report",
+  h(async (_req, res) => {
+    res.json(await buildDailyReport());
+  })
+);
+
 // --- メンバーのプロフィール画像（表示名→URL） ---
 app.get(
   "/api/avatars",
@@ -674,6 +673,41 @@ app.post(
       listIgnoreKeywords(),
     ]);
     res.json({ ok: true, text: ruleText, ignore });
+  })
+);
+// 無視キーワードを1件解除する（設定画面の「× 解除」ボタン）。
+app.post(
+  "/api/rules/remove-ignore",
+  h(async (req, res) => {
+    const keyword = typeof req.body?.keyword === "string" ? req.body.keyword : "";
+    if (!keyword.trim())
+      return res.status(400).json({ error: "解除するキーワードが空です。" });
+    const r = await removeIgnoreKeyword(keyword);
+    if (!r.ok) return res.status(400).json({ error: r.msg });
+    res.json({ ok: true, ignore: await listIgnoreKeywords() });
+  })
+);
+
+// --- 「今後カード化しない」：この送信元を今後カード化しない＋今のカードを静かに閉じる ---
+// 迷惑メールに限らず「返信不要なだけ」の送信元も対象。却下（草案の出来を学習）とは別扱いで、
+// 送信元アドレスを無視リストに足し、カードは done にする。
+app.post(
+  "/api/items/:id/ignore-sender",
+  h(async (req, res) => {
+    const item = await readItem(req.params.id);
+    if (!item) return res.status(404).json({ error: "見つかりません" });
+    // カードに記録された返信先(reply_to = "名前 <addr>" か "addr")から送信元アドレスを取り出す。
+    const m = (item.reply_to || "").match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+    const sender = m?.[0]?.toLowerCase() || "";
+    if (!sender)
+      return res
+        .status(400)
+        .json({ error: "このカードには送信元アドレスがありません（メール以外は対象外です）。" });
+    const added = await addIgnoreKeyword(sender);
+    if (!added.ok) return res.status(400).json({ error: added.msg });
+    // 現在のカードを閉じる。done は「対応不要」扱いで草案の良し悪しを学習しない。
+    if (item.status !== "done") await updateStatus(req.params.id, "done");
+    res.json({ ok: true, sender, ignore: await listIgnoreKeywords() });
   })
 );
 

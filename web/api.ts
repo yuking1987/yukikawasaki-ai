@@ -2,6 +2,8 @@ import type { ItemFrontmatter, Status } from "../shared/roles.ts";
 
 export interface ItemFull extends ItemFrontmatter {
   body: string;
+  /** Sparkでこのスレッドを開くリンク（メールカードのみ・サーバが都度組み立て） */
+  spark_url?: string;
 }
 
 export interface ReferenceMeta {
@@ -20,6 +22,48 @@ export interface ProjectMeta {
   ref: string;
   hasStack: boolean;
   hasPrecedents: boolean;
+}
+
+export interface Divergence {
+  when: string;
+  date: string;
+  subject: string;
+  meta?: string;
+  tag: string;
+  similarity?: number;
+  incoming?: string;
+  draft: string;
+  sent: string;
+}
+export interface LearnedRuleBatch {
+  when: string;
+  date: string;
+  from: string;
+  rules: string[];
+}
+export interface DailyReport {
+  date: string;
+  today: Divergence[];
+  newRules: LearnedRuleBatch[];
+  counts: {
+    repliesTotal: number;
+    repliesToday: number;
+    divergTotal: number;
+    requireLearnTotal: number;
+    minorTotal: number;
+    requireLearnToday: number;
+    untilDistill: number;
+    threshold: number;
+    rulesTotal: number;
+  };
+  week: {
+    from: string;
+    to: string;
+    divergences: number;
+    requireLearn: number;
+    rulesAdded: number;
+    examples: Divergence[];
+  };
 }
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -105,17 +149,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, expected_thread_last_id: expectedThreadLastId ?? "" }),
     }),
-  // メール返信の下書きをIMAPに作成（送信はしない）
-  mailDraft: (id: string, text: string, to?: string) =>
-    req<{ ok: true; box: string; to: string; subject: string }>(
-      `/api/items/${id}/mail-draft`,
-      { method: "POST", body: JSON.stringify({ text, to }) }
-    ),
   triage: (type: string, text: string) =>
     req<{ assignee: string; importance: string }>(`/api/triage`, {
       method: "POST",
       body: JSON.stringify({ type, text }),
     }),
+  dailyReport: () => req<DailyReport>(`/api/daily-report`),
   health: () => req<{ ok: boolean; bootId?: string }>(`/api/health`),
   syncStatus: () => req<{ status: Record<string, string> }>(`/api/sync-status`),
   avatars: () => req<{ avatars: Record<string, string> }>(`/api/avatars`),
@@ -125,4 +164,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, ignoreKeyword }),
     }),
+  removeIgnore: (keyword: string) =>
+    req<{ ok: boolean; ignore: string[] }>(`/api/rules/remove-ignore`, {
+      method: "POST",
+      body: JSON.stringify({ keyword }),
+    }),
+  // この送信元を今後カード化しない＋今のカードを閉じる（返信不要な送信元の整理）
+  ignoreSender: (id: string) =>
+    req<{ ok: boolean; sender: string; ignore: string[] }>(
+      `/api/items/${id}/ignore-sender`,
+      { method: "POST" }
+    ),
 };

@@ -2,13 +2,18 @@ import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { ensureWritableForCli, recordSync } from "./vault.ts"; // .env読込＋安全/初期化検査
 import { saveBuffer, attachBlock, detailOf, type AttachMeta } from "./attachments.ts";
+import { matchClientLabel } from "./clients.ts";
 import {
   createItem,
   listItems,
+  readItem,
+  extractDraft,
   updateStatus,
   updateThread,
   appendReplyExample,
+  appendDraftVsSent,
   listIgnoreKeywords,
+  backfillReplyTo,
 } from "./items.ts";
 import type { ItemFrontmatter } from "../shared/roles.ts";
 
@@ -32,13 +37,12 @@ const WRITE = process.argv.includes("--write");
 const DAYS = Number(process.env.IMAP_SINCE_DAYS || 30);
 const SENT_BOX = process.env.IMAP_SENT || "INBOX.Sent";
 
-/** 取り込む箱。onlyTo が空でなければ、その宛先を含むメールだけを拾う。 */
+/** 取り込む箱。onlyTo が空でなければ、その窓口宛の依頼だけを拾う。 */
 interface Account {
-  label: string;
   user: string;
   pass: string;
   onlyTo: string[];
-  /** 送信箱も読むか（＝本人の返信を正例学習・自動クローズに使う箱かどうか）。 */
+  /** 送信箱も読むか。＝本人(kawasaki@)の箱かどうか。正例学習・自動クローズはここだけで行う。 */
   sent: boolean;
 }
 
@@ -55,17 +59,9 @@ const CREATIVE_PASS = process.env.CREATIVE_IMAP_PASSWORD || "";
 // creative@ は受信箱のみ読む。「対応済み」判定は本人(kawasaki@)の送信で行うので、
 // creative@ の送信箱を足してもスレッドは閉じられず、重複するだけのため。
 const ACCOUNTS: Account[] = [
-  { label: "kawasaki", user: USER, pass: PASS, onlyTo: [], sent: true },
+  { user: USER, pass: PASS, onlyTo: [], sent: true },
   ...(CREATIVE_USER && CREATIVE_PASS && CREATIVE_ONLY_TO.length
-    ? [
-        {
-          label: "creative",
-          user: CREATIVE_USER,
-          pass: CREATIVE_PASS,
-          onlyTo: CREATIVE_ONLY_TO,
-          sent: false,
-        },
-      ]
+    ? [{ user: CREATIVE_USER, pass: CREATIVE_PASS, onlyTo: CREATIVE_ONLY_TO, sent: false }]
     : []),
 ];
 // 社長がダッシュボードから登録した「取り込み無視キーワード」。件名/送信元に含めばカード化しない。
@@ -211,6 +207,14 @@ interface Msg {
   attachments: Attach[];
 }
 
+/** 返信先文字列 "名前 <addr>"（名前が無ければ addr のみ）を組み立てる。 */
+function replyToOf(m: { from: string; fromName: string }): string {
+  return m.fromName && m.fromName !== m.from ? `${m.fromName} <${m.from}>` : m.from;
+}
+
+// 配信/迷惑として新規カード化はしないが、既存カードの送信元(reply_to)埋め直しに使うため控える。
+const junkDropped: { messageId: string; subject: string; from: string; fromName: string }[] = [];
+
 function addressesIn(field: ParsedMail["to"]): string[] {
   const arr = Array.isArray(field) ? field : field ? [field] : [];
   return arr.flatMap((a) => a.value.map((v) => (v.address || "").toLowerCase()));
@@ -258,8 +262,17 @@ async function fetchBox(
       if (
         from.toLowerCase() !== ME &&
         (junkReason(from, headers) || matchesIgnore(from, p.subject || ""))
-      )
+      ) {
+        // 迷惑フィルタ導入前に作られた“居残りカード”に送信元を埋めるため、送信元だけ控える。
+        if (from)
+          junkDropped.push({
+            messageId: p.messageId || "",
+            subject: p.subject || "",
+            from,
+            fromName: p.from?.value?.[0]?.name || from,
+          });
         continue;
+      }
       const rawDate = p.date || m.internalDate || new Date();
       // 添付：素材（画像/PDF/Excel等）が来ているかの判断材料。
       // 署名ロゴ等の埋め込み画像(related)・ファイル名なしのパートは除外。
@@ -355,14 +368,39 @@ async function main() {
     written = 0,
     updated = 0,
     learned = 0,
+    diffed = 0,
     closed = 0,
-    reopened = 0;
+    reopened = 0,
+    backfilled = 0;
   const list: { subject: string; last: string; count: number; date: string }[] = [];
+
+  // 迷惑フィルタ導入前の居残りカード救済：送信元(reply_to)が空のメールカードに、
+  // 今回控えた配信メールの送信元を messageId／件名で突き合わせて埋める（新規作成はしない）。
+  if (WRITE && junkDropped.length) {
+    for (const it of existing) {
+      if (it.source !== "gmail" || it.reply_to) continue;
+      const hit =
+        junkDropped.find((j) => j.messageId && j.messageId === it.thread_last_id) ||
+        junkDropped.find((j) => normalizeSubject(j.subject) === it.thread_key);
+      if (hit && (await backfillReplyTo(it.id, replyToOf(hit)))) backfilled++;
+    }
+  }
 
   for (const [key, arr] of threads) {
     arr.sort((a, b) => (a.date < b.date ? -1 : 1));
     const last = arr[arr.length - 1];
     const lastFromMe = last.from.toLowerCase() === ME;
+
+    // どのルート（返信済み/更新/再オープン）でも、送信元(reply_to)が空のメールカードは
+    // このスレッドの「最後に相手から来たメッセージ」の差出人で埋める（機能追加前の居残り救済）。
+    // 相手のメッセージが窓口内に無い場合は、自分宛にせず空のままにする（誤登録防止）。
+    if (WRITE) {
+      const inMsg = [...arr].reverse().find((m) => m.from.toLowerCase() !== ME);
+      if (inMsg?.from)
+        for (const it of existing)
+          if (it.thread_key === key && it.source === "gmail" && !it.reply_to)
+            if (await backfillReplyTo(it.id, replyToOf(inMsg))) backfilled++;
+    }
 
     if (lastFromMe) {
       handled++;
@@ -378,6 +416,29 @@ async function main() {
           reply: cleanBody(last.text),
         });
         if (rec.recorded) learned++;
+        // 【食い違い学習】このスレッドの既存カードにAIの草案が付いていたら、
+        // その草案と「実際に送った返信」を突き合わせて _memory/draft-vs-sent.md に残す。
+        // ＝川崎さんが草案を無視して別の解釈/言い回しで打ち返したケースを取りこぼさない。
+        const card = existing.find((it) => it.thread_key === key);
+        if (card) {
+          const full = await readItem(card.id);
+          const draft = full ? extractDraft(full.body) : "";
+          // 草案が実在（未作成プレースホルダでない）ときだけ記録する
+          if (draft && !draft.includes("AIが草案を作成予定")) {
+            const d = await appendDraftVsSent({
+              messageId: last.messageId,
+              when: last.date.slice(0, 16).replace("T", " "),
+              subject: normalizeSubject(last.subject) ? last.subject : "(件名なし)",
+              cardId: card.id,
+              project: card.project,
+              audience: card.audience,
+              incoming: incoming ? cleanBody(incoming.text) : "",
+              draft,
+              sent: cleanBody(last.text),
+            });
+            if (d.recorded) diffed++;
+          }
+        }
         // 該当pending項目を自動クローズ
         for (const it of existing) {
           if (it.status === "pending" && it.thread_key === key) {
@@ -442,11 +503,15 @@ async function main() {
         continue; // 既存カードがあるので新規は作らない（重複防止）
       }
       const id = `mail-${last.date.slice(0, 10)}-${sanitizeId(last.messageId || last.subject)}`;
-      const body = `## 元メッセージ\n${await buildThread(id)}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
+      const threadText = await buildThread(id);
+      const body = `## 元メッセージ\n${threadText}\n\n## ドラフト\n（AIが草案を作成予定）\n`;
+      // 送信元ドメイン→本文中のドメインの順でクライアントを照合。当たれば案件名に採用。
+      const clientLabel = matchClientLabel({ email: last.from, text: threadText });
       const fm: ItemFrontmatter = {
         id,
         source: "gmail",
         project: "未分類",
+        project_label: clientLabel || undefined,
         audience: "external",
         type: "reply",
         status: "pending",
@@ -456,9 +521,7 @@ async function main() {
         thread_key: key,
         thread_last_id: last.messageId,
         // スレッドに繋がる下書きを作るのに使う（宛先＝最後に送ってきた相手／件名＝Re:を付ける前）
-        reply_to: last.fromName && last.fromName !== last.from
-          ? `${last.fromName} <${last.from}>`
-          : last.from,
+        reply_to: replyToOf(last),
         reply_subject: last.subject,
       };
       const r = await createItem(fm, body);
@@ -475,7 +538,7 @@ async function main() {
     .forEach((t, i) => console.log(`${String(i + 1).padStart(2)}. ${t.date} [${t.count}通] ${t.subject}  ← ${t.last}`));
   if (WRITE) {
     console.log(
-      `\n[imap] 新規 ${written} / スレッド更新 ${updated} / 再オープン ${reopened} / 正例学習 ${learned} / 自動クローズ ${closed} 件`
+      `\n[imap] 新規 ${written} / スレッド更新 ${updated} / 再オープン ${reopened} / 送信元埋め直し ${backfilled} / 正例学習 ${learned} / 食い違い記録 ${diffed} / 自動クローズ ${closed} 件`
     );
     recordSync("mail"); // 最終取り込み時刻を記録（画面表示用）
   } else console.log(`\n（ドライラン。項目化＋正例学習するには: npm run ingest:mail -- --write）`);

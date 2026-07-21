@@ -9,18 +9,22 @@ import {
   useContext,
   type ReactNode,
 } from "react";
-import { api, type ItemFull, type ReferenceMeta, type ProjectMeta } from "./api.ts";
+import {
+  api,
+  type ItemFull,
+  type ReferenceMeta,
+  type ProjectMeta,
+  type DailyReport,
+  type Divergence,
+} from "./api.ts";
 
 // メンバー表示名→プロフィール画像URL。スレッドのアバター表示に使う（無ければ色付きイニシャル）。
 const AvatarContext = createContext<Record<string, string>>({});
 import {
-  TYPE_LABELS,
   STATUS_LABELS,
   SOURCE_LABELS,
-  AUDIENCE_LABELS,
   SOURCES,
-  AUDIENCES,
-  STATUSES,
+  isProposalType,
   type ItemFrontmatter,
   type Ask,
 } from "../shared/roles.ts";
@@ -29,7 +33,6 @@ import { NewDraftModal } from "./NewDraftModal.tsx";
 type Filters = {
   status: string;
   source: string;
-  audience: string;
   assignee: string;
   project: string;
   q: string;
@@ -38,7 +41,6 @@ type Filters = {
 const EMPTY: Filters = {
   status: "pending",
   source: "",
-  audience: "",
   assignee: "",
   project: "",
   q: "",
@@ -46,8 +48,8 @@ const EMPTY: Filters = {
 
 // リロード（自動更新含む）しても「いま見ていた画面」に戻れるよう、
 // 表示タブと選択中カードを localStorage に保存・復元する。
-type View = "dashboard" | "office" | "knowledge";
-const VIEWS: readonly string[] = ["dashboard", "office", "knowledge"];
+type View = "dashboard" | "learning" | "knowledge";
+const VIEWS: readonly string[] = ["dashboard", "learning", "knowledge"];
 function restoreView(): View {
   try {
     const v = localStorage.getItem("gb.view");
@@ -106,17 +108,31 @@ export function App() {
 
   const reload = useCallback(async () => {
     try {
-      // 「保留中(スルー中)」は擬似ステータス。サーバにはpendingで問い合わせ、クライアントで絞る。
+      // 擬似ステータス（画面上だけの状態）はサーバに素の値で問い合わせ、クライアントで絞る。
+      //   snoozed=再通知待ち / closed=対応済み（approved/rejected/done を束ねたもの）
       const snoozedView = filters.status === "snoozed";
-      const serverStatus = snoozedView ? "pending" : filters.status;
+      const closedView = filters.status === "closed";
+      const serverStatus =
+        snoozedView ? "pending" : closedView ? "" : filters.status;
       const { items } = await api.listItems({ ...filters, status: serverStatus });
       const now = Date.now();
       const isSnoozed = (it: ItemFrontmatter) =>
         !!it.snooze_until && Date.parse(it.snooze_until) > now;
+      const isClosed = (it: ItemFrontmatter) =>
+        it.status === "approved" || it.status === "rejected" || it.status === "done";
       let list = items;
       if (snoozedView) list = items.filter(isSnoozed);
-      else if (filters.status === "pending" || filters.status === "")
-        list = items.filter((it) => !isSnoozed(it)); // 承認待ちからスルー中を隠す
+      else if (closedView) list = items.filter(isClosed); // 対応済み＝処理が終わったもの
+      else if (filters.status === "pending") {
+        // 対応待ちビューには、再生成中（revision）のカードも一緒に見せる。
+        // ＝再生成を依頼した案件が一覧から消えず「今作り直し中」と分かる。
+        const { items: regen } = await api.listItems({ ...filters, status: "revision" });
+        list = [...items, ...regen]
+          .filter((it) => !isSnoozed(it)) // 対応待ちから再通知待ちを隠す
+          .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); // 新しい順（サーバと同じ並び）
+      } else if (filters.status === "") {
+        list = items.filter((it) => !isSnoozed(it)); // すべて表示でも再通知待ちは隠す
+      }
       setItems(list);
       setError(null);
     } catch (e) {
@@ -153,8 +169,7 @@ export function App() {
     return () => clearInterval(t);
   }, []);
 
-  // 自動更新: 5秒ごとに一覧を再取得（ダッシュボード表示中のみ。
-  // オフィス表示中は OfficeView が自前でポーリングするため二重取得を避ける）
+  // 自動更新: 5秒ごとに一覧を再取得（ダッシュボード表示中のみ）
   useEffect(() => {
     if (view !== "dashboard") return;
     const t = setInterval(() => reload(), 5000);
@@ -177,7 +192,7 @@ export function App() {
     }
   }, [items, view]);
 
-  // 初期未選択のときだけ先頭を自動選択（明示選択は上書きしない＝オフィスから開いた項目を保持）
+  // 初期未選択のときだけ先頭を自動選択（明示選択は上書きしない）
   useEffect(() => {
     if (view === "dashboard" && !selectedId && items.length > 0) {
       setSelectedId(items[0].id);
@@ -197,7 +212,7 @@ export function App() {
           <span className="logo">🏢</span>
           <div>
             <h1>バーチャル制作会社</h1>
-            <p className="sub">承認ダッシュボード — 社長は判断・承認だけ</p>
+            <p className="sub">対応ダッシュボード — 社長は判断・対応だけ</p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -210,10 +225,10 @@ export function App() {
               📋 ダッシュボード
             </button>
             <button
-              className={view === "office" ? "on" : ""}
-              onClick={() => setView("office")}
+              className={view === "learning" ? "on" : ""}
+              onClick={() => setView("learning")}
             >
-              🏢 オフィス
+              🧠 学びの日報
             </button>
             <button
               className={view === "knowledge" ? "on" : ""}
@@ -235,14 +250,8 @@ export function App() {
 
       {view === "knowledge" ? (
         <KnowledgeView />
-      ) : view === "office" ? (
-        <OfficeView
-          onOpenItem={(id) => {
-            setSelectedId(id);
-            setView("dashboard");
-            reload(); // 親リストを最新化（オフィス中は親ポーリングが止まっているため）
-          }}
-        />
+      ) : view === "learning" ? (
+        <DailyReportView />
       ) : (
         <>
           <FilterBar
@@ -283,6 +292,185 @@ export function App() {
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
     </AvatarContext.Provider>
+  );
+}
+
+// ============================================================
+// 学びの日報ビュー：AIが「どこで賢くなったか」を毎日振り返る。
+// 食い違い（AIの草案 vs 川崎さんの実返信）→ 今日の実例・新ルール・数字・週次。
+// 読み取り専用。データは /api/daily-report（_memory 配下から生成）。
+// ============================================================
+function fmtDate(ymd: string): string {
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${Number(m[2])}/${Number(m[3])}` : ymd;
+}
+
+function DivergenceCard({ d }: { d: Divergence }) {
+  const learn = d.tag === "要学習";
+  return (
+    <div className={`dr-diff ${learn ? "learn" : "minor"}`}>
+      <div className="dr-diff-head">
+        <span className={`dr-tag ${learn ? "learn" : "minor"}`}>{d.tag}</span>
+        <span className="dr-diff-title">{d.subject}</span>
+        {d.meta && <span className="dr-diff-meta">{d.meta}</span>}
+        {typeof d.similarity === "number" && (
+          <span className="dr-diff-sim">類似 {d.similarity}%</span>
+        )}
+      </div>
+      <div className="dr-diff-cols">
+        <div className="dr-col ai">
+          <div className="dr-col-label">私の草案</div>
+          <div className="dr-col-body">{d.draft || "（なし）"}</div>
+        </div>
+        <div className="dr-col me">
+          <div className="dr-col-label">あなたが実際に送った返信</div>
+          <div className="dr-col-body">{d.sent || "（なし）"}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DailyReportView() {
+  const [rep, setRep] = useState<DailyReport | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .dailyReport()
+      .then((r) => alive && setRep(r))
+      .catch((e) => alive && setErr(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (loading) return <div className="dr-wrap"><p className="muted">読み込み中…</p></div>;
+  if (err) return <div className="dr-wrap"><div className="banner error">⚠ {err}</div></div>;
+  if (!rep) return null;
+
+  const c = rep.counts;
+  const learnedToday = rep.today.filter((d) => d.tag === "要学習").length;
+  const distillPct = Math.min(
+    100,
+    Math.round(((c.threshold - c.untilDistill) / c.threshold) * 100)
+  );
+
+  return (
+    <div className="dr-wrap">
+      <div className="dr-header">
+        <h2>🧠 学びの日報 <span className="dr-date">{fmtDate(rep.date)}</span></h2>
+        <p className="dr-lead">
+          {learnedToday > 0
+            ? `今日は ${learnedToday} 件、あなたの打ち返しから学びました。`
+            : rep.today.length > 0
+            ? `今日は言い回しの微修正が ${rep.today.length} 件（大きなズレはなし）。`
+            : "今日はまだ学びの記録はありません。返信を送ると自動でここに溜まります。"}
+        </p>
+      </div>
+
+      {/* 数字サマリー */}
+      <div className="dr-stats">
+        <div className="dr-stat">
+          <div className="dr-stat-num">{c.repliesTotal}<span>件</span></div>
+          <div className="dr-stat-label">実返信から学習<br /><small>今日 +{c.repliesToday}</small></div>
+        </div>
+        <div className="dr-stat">
+          <div className="dr-stat-num">{c.requireLearnTotal}<span>件</span></div>
+          <div className="dr-stat-label">要学習の食い違い<br /><small>今日 +{c.requireLearnToday}</small></div>
+        </div>
+        <div className="dr-stat">
+          <div className="dr-stat-num">{c.minorTotal}<span>件</span></div>
+          <div className="dr-stat-label">微修正<br /><small>言い回しだけ</small></div>
+        </div>
+        <div className="dr-stat">
+          <div className="dr-stat-num">{c.rulesTotal}<span>個</span></div>
+          <div className="dr-stat-label">身についたルール<br /><small>自動蒸留</small></div>
+        </div>
+        <div className="dr-stat wide">
+          <div className="dr-stat-label">
+            学びの“まとめ直し（清書）”まで
+            <span className="dr-badge-live">学習は1件目から反映中</span>
+          </div>
+          <div className="dr-progress">
+            <div className="dr-progress-bar" style={{ width: `${distillPct}%` }} />
+          </div>
+          <div className="dr-stat-sub">
+            {c.untilDistill > 0
+              ? `あと ${c.untilDistill} 件の「要学習」がたまると、共通ルールに“まとめ直し”ます（それまでも一件ずつ次の草案に反映済み）`
+              : "まもなく共通ルールにまとめ直します（それまでも各件は反映済み）"}
+          </div>
+        </div>
+      </div>
+      <p className="dr-note">
+        ※ このバーは学習の“開始条件”ではありません。あなたが打ち返しを直すと、その学びは
+        <b>1件目からすぐ次の草案に反映</b>されます。バーは、たまった学びを1つの共通ルールへ
+        <b>まとめ直す（清書する）</b>までの目安です。
+      </p>
+
+      {/* 今日の食い違いの実例 */}
+      <section className="dr-section">
+        <h3>今日、あなたが直したところ（＝私の学び）</h3>
+        {rep.today.length === 0 ? (
+          <p className="muted">
+            今日はまだありません。あなたが草案と違う打ち返しをすると、その差がここに並びます。
+          </p>
+        ) : (
+          rep.today.map((d, i) => <DivergenceCard key={i} d={d} />)
+        )}
+      </section>
+
+      {/* 新しく身についたルール */}
+      <section className="dr-section">
+        <h3>新しく身についたルール</h3>
+        {rep.newRules.length === 0 ? (
+          <p className="muted">
+            今日、共通ルールへの“まとめ直し”はまだありません（あと {c.untilDistill} 件で清書されます）。
+            ※ここが空でも、個々の食い違いは1件目から次の草案に反映済みです。
+          </p>
+        ) : (
+          rep.newRules.map((b, i) => (
+            <div className="dr-rulebatch" key={i}>
+              <div className="dr-rulebatch-head">
+                {b.from || "食い違いから"} 蒸留 <span className="muted">{b.when}</span>
+              </div>
+              <ul>
+                {b.rules.map((r, j) => (
+                  <li key={j}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
+      </section>
+
+      {/* 週次のまとめ */}
+      <section className="dr-section">
+        <h3>今週のまとめ <span className="muted">{fmtDate(rep.week.from)}〜{fmtDate(rep.week.to)}</span></h3>
+        <p className="dr-week-line">
+          食い違い <b>{rep.week.divergences}</b> 件（うち要学習 <b>{rep.week.requireLearn}</b> 件）／
+          新しく身についたルール <b>{rep.week.rulesAdded}</b> 個
+        </p>
+        {rep.week.examples.length > 0 && (
+          <>
+            <div className="dr-week-sub muted">今週の代表的な学び</div>
+            {rep.week.examples.map((d, i) => (
+              <div className="dr-week-ex" key={i}>
+                <span className="dr-tag learn">要学習</span>
+                <span className="dr-week-ex-title">{fmtDate(d.date)}・{d.subject}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </section>
+
+      <p className="dr-foot muted">
+        この日報は自動で更新されます。ルール化まで含めて全自動で、あなたの操作は不要です。
+      </p>
+    </div>
   );
 }
 
@@ -592,11 +780,12 @@ function SyncStatus() {
       clearInterval(t);
     };
   }, []);
+  // 参照（資料の同期）は「案件の入口」ではないので上部帯から外し、
+  // サイドバーの「参照資料」トグル内に表示する（ReferencePanel）。
   const defs: [string, string][] = [
     ["mail", "メール"],
     ["asana", "Asana"],
     ["slack", "Slack"],
-    ["references", "参照"],
   ];
   const shown = defs.filter(([k]) => status[k]);
   if (shown.length === 0) return null;
@@ -703,8 +892,27 @@ function RulesModal({ onClose }: { onClose: () => void }) {
             <div className="rules-sub">現在の「取り込まない」キーワード</div>
             <div className="chips">
               {ignoreList.map((k) => (
-                <span key={k} className="chip">
+                <span key={k} className="chip removable">
                   {k}
+                  <button
+                    className="chip-x"
+                    disabled={busy}
+                    title="解除する（また取り込むようになります）"
+                    onClick={async () => {
+                      setBusy(true);
+                      setErr(null);
+                      try {
+                        const r = await api.removeIgnore(k);
+                        setIgnoreList(r.ignore);
+                      } catch (e) {
+                        setErr((e as Error).message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    ×
+                  </button>
                 </span>
               ))}
             </div>
@@ -750,18 +958,15 @@ function FilterBar({
         onChange={(v) => set("status", v)}
         options={[
           ["", "すべて"],
-          ...STATUSES.map((s) => [s, STATUS_LABELS[s]] as [string, string]),
-          ["snoozed", "保留中（スルー中）"],
+          // 人間向けは2状態に集約。対応待ち=pending（再生成中も混ぜて表示）、
+          // 対応済み=approved/rejected/done を束ねた擬似ステータス「closed」。
+          ["pending", STATUS_LABELS.pending],
+          ["closed", "対応済み"],
+          ["snoozed", "再通知待ち"],
         ]}
       />
       <Select
-        label="社内/社外"
-        value={filters.audience}
-        onChange={(v) => set("audience", v)}
-        options={[["", "すべて"], ...AUDIENCES.map((a) => [a, AUDIENCE_LABELS[a]] as [string, string])]}
-      />
-      <Select
-        label="入口"
+        label="ツール"
         value={filters.source}
         onChange={(v) => set("source", v)}
         options={[["", "すべて"], ...SOURCES.map((s) => [s, SOURCE_LABELS[s]] as [string, string])]}
@@ -825,23 +1030,27 @@ function ItemList({
       {items.map((it) => (
         <li
           key={it.id}
-          className={`card src-${it.source} ${selectedId === it.id ? "sel" : ""}`}
+          className={`card src-${it.source} ${selectedId === it.id ? "sel" : ""} ${it.status === "revision" ? "regen" : ""}`}
           onClick={() => onSelect(it.id)}
         >
           <div className="card-top">
             <SourceBadge source={it.source} />
-            <StatusBadge status={it.status} />
+            {it.status === "revision" ? (
+              // 再生成待ち＝定期処理が拾って作り直し中。一覧でも「今このカードを再生成中」と分かるように。
+              <span className="badge regen">
+                <span className="regen-dot" />再生成中
+              </span>
+            ) : (
+              <StatusBadge status={it.status} />
+            )}
             {it.thread_updated && <span className="badge newmsg">🔄 新着</span>}
             {(it.asks || []).some((a) => a && a.question && !a.resolved) && (
               <span className="badge askbadge">🙋 確認</span>
             )}
-            <span className="badge audience">{AUDIENCE_LABELS[it.audience]}</span>
           </div>
           <div className="card-title">{it.title}</div>
           <div className="card-meta">
             <span>{it.project_label || it.project}</span>
-            <span>·</span>
-            <span className="type">{TYPE_LABELS[it.type]}</span>
             {it.due_on && (
               <>
                 <span>·</span>
@@ -914,8 +1123,11 @@ function SourceBadge({ source }: { source: ItemFrontmatter["source"] }) {
 
 function ReferencePanel() {
   const [refs, setRefs] = useState<ReferenceMeta[]>([]);
+  const [lastSync, setLastSync] = useState<string | null>(null); // 資料を最後に取り込んだ時刻
+  const [open, setOpen] = useState(false); // 基本は閉じておく（必要なときだけ開く）
   useEffect(() => {
     api.listReferences().then((r) => setRefs(r.references)).catch(() => {});
+    api.syncStatus().then((r) => setLastSync(r.status.references ?? null)).catch(() => {});
   }, []);
   // ローカル原本を上、外部同期を下にまとめる（各グループ内はタイトル順）
   const sorted = useMemo(() => {
@@ -927,8 +1139,22 @@ function ReferencePanel() {
   if (refs.length === 0) return null;
   const firstExternal = sorted.findIndex((r) => r.kind !== "local");
   return (
-    <div className="ref-panel">
-      <h3>参照資料</h3>
+    <div className={`ref-panel${open ? "" : " is-collapsed"}`}>
+      <button
+        type="button"
+        className="ref-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="ref-caret">{open ? "▾" : "▸"}</span>
+        参照資料
+        <span className="ref-count">{refs.length}</span>
+      </button>
+      {open && (
+      <>
+      {lastSync && (
+        <div className="ref-lastsync">最終チェック：{relTime(lastSync)}</div>
+      )}
       <ul>
         {sorted.map((r, i) => (
           <Fragment key={r.slug}>
@@ -956,6 +1182,8 @@ function ReferencePanel() {
           </Fragment>
         ))}
       </ul>
+      </>
+      )}
     </div>
   );
 }
@@ -974,6 +1202,25 @@ const SECTION_META: { key: string; label: string; kind: string; icon: string }[]
 function metaFor(rawTitle: string) {
   const hit = SECTION_META.find((m) => rawTitle.startsWith(m.key));
   return hit ?? { label: rawTitle || "本文", kind: "plain", icon: "•" };
+}
+
+// 「判定サマリ（社内用）」は分析部分（契約形態・経緯・素材・保守内外・影響範囲）を画面に出さない＝AIの解釈用。
+// 人間に要るのは「要川崎判断」＝川崎さんが決める点だけなので、そこだけ抜き出す。
+// 生成前ゲート（asks）が効かない既存カード／最終対応だけの点(b)のための表示。
+function kawasakiDecision(content: string): string | null {
+  const lines = content.split("\n");
+  // 「要川崎判断」「要・川崎判断」等の行を探す（先頭の -・* や ** 装飾を許容）
+  const marker = /^\s*(?:[-*・]\s*)?(?:\*\*)?\s*要\s*[・･]?\s*川崎(?:判断|確認)/;
+  const idx = lines.findIndex((l) => marker.test(l));
+  if (idx === -1) return null;
+  // 見つけた行から節末まで（要川崎判断は通常サマリ最後の項目）。ラベルを外して中身だけ返す。
+  const chunk = lines.slice(idx).join("\n").trim();
+  const body = chunk
+    .replace(/^\s*(?:[-*・]\s*)?(?:\*\*)?\s*要\s*[・･]?\s*川崎(?:判断|確認)(?:\*\*)?\s*[:：]?\s*/, "")
+    .trim();
+  // 「無」「なし」だけなら判断事項なし＝非表示
+  if (/^(無|なし|特になし|無し)[。.]?$/.test(body)) return null;
+  return body || chunk;
 }
 
 function parseSections(body: string): { rawTitle: string; content: string }[] {
@@ -1135,17 +1382,6 @@ function SimpleMarkdown({ text }: { text: string }) {
   );
 }
 
-// 入口の内容＝届いたスレッド。入口ごとに補足を変える。
-function incomingLabel(source: ItemFrontmatter["source"]): string {
-  if (source === "asana") return "スレッド（説明欄・コメント）";
-  if (source === "gmail") return "スレッド（メール）";
-  if (source === "slack") return "スレッド（Slack）";
-  if (source === "chatwork") return "スレッド（チャットワーク）";
-  if (source === "teams") return "スレッド（Teams）";
-  if (source === "tokoton") return "スレッド（トコトン）";
-  return "スレッド（届いた内容）";
-}
-
 // スレッド見出し「YYYY-MM-DD HH:MM 名前 <mail>」を分解。
 function parseHeader(h: string): { when: string; name: string } {
   const m = h.match(/^(\d{4}-\d{2}-\d{2})\s+([\d:]+)?\s*(.+?)(?:\s*<[^>]*>)?\s*$/);
@@ -1195,7 +1431,11 @@ function ThreadView({ content }: { content: string }) {
   if (msgs.length === 0) return <SimpleMarkdown text={content} />;
   return (
     <div className="thread-view">
-      {lead && <div className="thread-lead">{lead}</div>}
+      {lead && (
+        <div className="thread-lead">
+          <SimpleMarkdown text={lead} />
+        </div>
+      )}
       {msgs.map((m, i) => {
         const { when, name } = parseHeader(m.header);
         const isLast = i === msgs.length - 1;
@@ -1241,7 +1481,6 @@ function ThreadView({ content }: { content: string }) {
 
 function BodySections({
   body,
-  source,
   draftStatus,
   startedAt,
   onGenerate,
@@ -1250,7 +1489,6 @@ function BodySections({
   draftEditor,
 }: {
   body: string;
-  source: ItemFrontmatter["source"];
   draftStatus?: ItemFrontmatter["draft_status"];
   startedAt?: string;
   onGenerate?: () => void;
@@ -1259,8 +1497,8 @@ function BodySections({
   draftEditor?: ReactNode; // 編集中はドラフト本文の代わりに表示する入力欄
 }) {
   // 人間には不要なセクションはGUIでは非表示（ファイルには残る＝AIの学習・履歴用）。
-  // 「状況分析（AIの読み）」／過去の「却下理由」は画面に出さない。
-  const HIDDEN_SECTIONS = ["状況分析", "却下理由"];
+  // 「状況分析（AIの読み）」／過去の「却下理由」／「メモ（AIの解釈用スペース）」は画面に出さない。
+  const HIDDEN_SECTIONS = ["状況分析", "却下理由", "メモ"];
   const sections = parseSections(body).filter(
     (s) => !HIDDEN_SECTIONS.some((h) => s.rawTitle.startsWith(h))
   );
@@ -1268,7 +1506,24 @@ function BodySections({
     <div className="sections">
       {sections.map((s, i) => {
         const meta = metaFor(s.rawTitle);
-        const label = meta.kind === "incoming" ? incomingLabel(source) : meta.label;
+        const label = meta.label;
+        // 「判定サマリ（社内用）」は分析部分を隠し、川崎さんが決める点＝「要川崎判断」だけを見せる。
+        if (s.rawTitle.startsWith("判定サマリ")) {
+          const decision = kawasakiDecision(s.content);
+          if (!decision) return null; // 判断事項なし＝丸ごと非表示
+          return (
+            <div key={i} className="section note">
+              <div className="section-label">
+                <span className="section-icon">⚖️</span>
+                あなたの判断が要る点
+              </div>
+              <SimpleMarkdown text={decision} />
+            </div>
+          );
+        }
+        // 届いたスレッド（説明欄・コメント）は囲い・見出しなしで、そのまま吹き出し表示する
+        if (meta.kind === "incoming")
+          return <ThreadView key={i} content={s.content} />;
         // スレッド全文は既定で折りたたむ（要約で速く読み、必要時に原文検証）
         if (meta.kind === "thread")
           return (
@@ -1290,9 +1545,7 @@ function BodySections({
                 <span className="section-actions">{draftActions}</span>
               ) : null}
             </div>
-            {meta.kind === "incoming" ? (
-              <ThreadView content={s.content} />
-            ) : meta.kind === "outgoing" ? (
+            {meta.kind === "outgoing" ? (
               draftEditor ?? (
                 <DraftSection
                   content={s.content}
@@ -1327,10 +1580,19 @@ function DraftSection({
   busy?: boolean;
 }) {
   const isPlaceholder = /AIが草案を作成予定/.test(content);
+  // 生成前ゲート：確認への回答待ち（回答が揃うと自動で草案を作り直す）。
+  const awaitingInput = /確認の回答後に草案を作成/.test(content);
   const generating = draftStatus === "generating";
   const stalled =
     generating && !!startedAt && Date.now() - Date.parse(startedAt) > 3 * 60 * 1000;
 
+  if (awaitingInput && !generating) {
+    return (
+      <div className="draft-state waiting">
+        <span>✋ この下の「🙋 AIからの確認・依頼」に回答すると、その内容でAIが草案を作ります。</span>
+      </div>
+    );
+  }
   if (generating) {
     return (
       <div className="draft-state generating">
@@ -1416,237 +1678,6 @@ function replaceDraftSection(body: string, next: string): string {
   return [...lines.slice(0, start + 1), next.trim(), "", ...lines.slice(end)]
     .join("\n")
     .replace(/\n{3,}/g, "\n\n");
-}
-
-// ドット絵キャラ（自己完結SVGスプライト・外部画像なし）。flipで左右反転＝向かい合い表現。
-function PixelChar({
-  skin = "#f1c27d",
-  hair = "#2b2b33",
-  shirt = "#5b8def",
-  pants = "#33333b",
-  size = 40,
-  flip = false,
-}: {
-  skin?: string;
-  hair?: string;
-  shirt?: string;
-  pants?: string;
-  size?: number;
-  flip?: boolean;
-}) {
-  // 8x12 のドット絵（H=髪 S=肌 E=目 B=服 P=脚）
-  const rows = [
-    "..HHHH..",
-    ".HHHHHH.",
-    ".HSSSSH.",
-    ".SEssES.",
-    ".SSSSSS.",
-    "..SSSS..",
-    ".BBBBBB.",
-    "SBBBBBBS",
-    "SBBBBBBS",
-    ".BBBBBB.",
-    ".PP..PP.",
-    ".PP..PP.",
-  ];
-  const col: Record<string, string> = {
-    H: hair,
-    S: skin,
-    E: "#20202a",
-    B: shirt,
-    P: pants,
-  };
-  const w = 8;
-  const h = rows.length;
-  return (
-    <svg
-      width={size}
-      height={(size * h) / w}
-      viewBox={`0 0 ${w} ${h}`}
-      style={{ shapeRendering: "crispEdges" }}
-    >
-      {/* 反転は内側gに逃がす（svgのtransformはbobアニメ用に空けておく） */}
-      <g transform={flip ? `translate(${w},0) scale(-1,1)` : undefined}>
-        {rows.flatMap((row, y) =>
-          [...row].map((ch, x) => {
-            const c = col[ch];
-            return c ? (
-              <rect key={`${x}-${y}`} x={x} y={y} width={1.02} height={1.02} fill={c} />
-            ) : null;
-          })
-        )}
-      </g>
-    </svg>
-  );
-}
-
-// --- バーチャルオフィス（ゲーム風・俯瞰）：名前付きAIスタッフが働く空間 ---
-// x/y はステージ内の%座標。中央上(50,15)が社長デスク。
-const STAFF: {
-  key: string;
-  name: string;
-  role: string;
-  hair: string;
-  color: string; // 服の色
-  line: string;
-  x: number;
-  y: number;
-}[] = [
-  { key: "reception", name: "アイ", role: "受付", hair: "#8a5a3c", color: "#f6c85f", line: "新しい案件、来てます！", x: 15, y: 46 },
-  { key: "direction", name: "ケント", role: "ディレPM", hair: "#2b2b33", color: "#4a9be0", line: "打ち返し案、見てください！", x: 36, y: 54 },
-  { key: "design", name: "ミオ", role: "デザイナー", hair: "#b8477e", color: "#e05a9b", line: "デザイン提案できました！", x: 64, y: 54 },
-  { key: "coding", name: "リク", role: "エンジニア", hair: "#1f1f26", color: "#3ac0a0", line: "技術の打ち返し案です！", x: 85, y: 46 },
-  { key: "maintenance", name: "タク", role: "保守担当", hair: "#4a3520", color: "#e08a3a", line: "保守対応の相談です！", x: 24, y: 82 },
-  { key: "ciy-pm", name: "ハル", role: "CIY-PM", hair: "#3a2f5a", color: "#8b7ee0", line: "CIYの改善提案です！", x: 50, y: 86 },
-  { key: "reviewer", name: "サト", role: "レビュアー", hair: "#5a4a3a", color: "#5aa0c0", line: "一次レビュー完了です！", x: 76, y: 82 },
-];
-
-function OfficeView({ onOpenItem }: { onOpenItem: (id: string) => void }) {
-  const [all, setAll] = useState<ItemFrontmatter[]>([]);
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const { items } = await api.listItems({});
-        setAll(items);
-      } catch {
-        /* ignore */
-      }
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
-
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setTick((x) => x + 1), 4000);
-    return () => clearInterval(t);
-  }, []);
-
-  const now = Date.now();
-  const active = all.filter(
-    (i) => !(i.snooze_until && Date.parse(i.snooze_until) > now)
-  );
-  const pending = active.filter((i) => i.status === "pending");
-  // Codex専務＝メンター役。各社員が出した成果物のうち「重要案件(importance:high)」で、
-  // まだCodexのクロスチェックを通っていない（passed以外）ものを、
-  // 「専務に見てもらう対象」として数える。要再考(revision)とは無関係。
-  const codexReview = active.filter(
-    (i) =>
-      i.importance === "high" &&
-      i.status === "pending" &&
-      i.review_status !== "passed"
-  );
-  const byRole = (key: string) =>
-    pending.filter((i) => (key === "reception" ? !i.assignee : i.assignee === key));
-
-  // 打ち合わせ中の社員（順番に社長デスクへ来て向かい合う）
-  const busyStaff = STAFF.map((s) => ({ s, load: byRole(s.key) })).filter(
-    (x) => x.load.length > 0
-  );
-  const meeting = busyStaff.length ? busyStaff[tick % busyStaff.length] : null;
-
-  return (
-    <div className="office-wrap">
-      <div className="office">
-        {/* おしゃれデザイン会社の内装 */}
-        <div className="decor window" />
-        <div className="decor rug" />
-        <div className="decor prop plant1">🪴</div>
-        <div className="decor prop plant2">🪴</div>
-        <div className="decor prop monstera">🌿</div>
-        <div className="decor prop sofa">🛋️</div>
-        <div className="decor prop art1">🖼️</div>
-        <div className="decor prop art2">🖼️</div>
-        <div className="decor prop books">📚</div>
-
-        {/* 社長デスク（打ち合わせ時は来客の方を向く） */}
-        <div className="boss-desk" style={{ left: "50%", top: "14%" }}>
-          <div className="ws-desk boss-furniture">
-            <span className="monitor">🖥️</span>
-          </div>
-          <div className={`person boss ${meeting ? "face-left" : ""}`}>
-            <PixelChar skin="#e8b98a" hair="#25201a" shirt="#2a3a55" size={46} flip={!!meeting} />
-          </div>
-          <div className="boss-label">川崎さん（社長）</div>
-          <div className={`tray ${pending.length ? "has" : ""}`}>
-            📥 <b>{pending.length}</b>
-          </div>
-
-          {/* 来客中の社員：社長の前に立って向かい合う */}
-          {meeting && (
-            <div className="visitor" style={{ "--c": meeting.s.color } as React.CSSProperties}>
-              <div className="person face-right">
-                <PixelChar hair={meeting.s.hair} shirt={meeting.s.color} size={40} />
-              </div>
-              <button
-                className="meet-bubble"
-                onClick={() => onOpenItem(meeting.load[0].id)}
-              >
-                {meeting.s.name}：{meeting.s.line}
-                <span className="speech-sub">
-                  {meeting.load[0].project_label || meeting.load[0].project}（
-                  {meeting.load.length}件）
-                </span>
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Codex専務 */}
-        <div
-          className={`exec ${codexReview.length ? "reviewing" : ""}`}
-          style={{ left: "89%", top: "13%" }}
-          title="Codex専務：各社員の重要案件をレビュー・助言するメンター役"
-        >
-          <div className="ws-desk" />
-          <div className="person">
-            <PixelChar skin="#e0b088" hair="#c9c9d2" shirt="#3a2f4a" size={42} flip />
-          </div>
-          <div className="exec-label">
-            Codex専務
-            <span className="exec-tag">
-              {codexReview.length ? `レビュー中 ${codexReview.length}` : "監査待機"}
-            </span>
-          </div>
-        </div>
-
-        {/* スタッフのデスク（着席して仕事。打ち合わせ中は離席） */}
-        {STAFF.map((s) => {
-          const load = byRole(s.key);
-          const busy = load.length > 0;
-          const away = meeting?.s.key === s.key;
-          return (
-            <div
-              key={s.key}
-              className="workstation"
-              data-busy={busy}
-              style={{ "--x": `${s.x}%`, "--y": `${s.y}%`, "--c": s.color } as React.CSSProperties}
-            >
-              <div className="ws-desk">
-                <span className="monitor">💻</span>
-              </div>
-              {away ? (
-                <div className="person chair">🪑</div>
-              ) : (
-                <div className={`person seated ${busy ? "working" : ""}`}>
-                  <PixelChar hair={s.hair} shirt={s.color} size={38} />
-                </div>
-              )}
-              <div className="ws-label">
-                {s.name}
-                <span className="role-tag">{s.role}</span>
-                {busy && <span className="ws-count">{load.length}</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <p className="office-foot">
-        社員はデスクで下書きを作り、順番に社長デスクへ来て相談します。高リスクはCodex専務がクロスチェック。社長は判断・承認だけ。（更新中）
-      </p>
-    </div>
-  );
 }
 
 // AI→人間への依頼(ask)を1件表示。方針を仰ぐ/調査依頼をGUIで受け答え。
@@ -1745,7 +1776,7 @@ function AsksPanel({
       ))}
       {open === 0 && (
         <p className="asks-foot">
-          回答が揃いました。Claude Codeに「回答ぶんを反映して再ドラフト」とご依頼ください。
+          回答が揃いました。この内容でAIが自動で草案を作ります（少し待つと下に反映されます）。
         </p>
       )}
     </div>
@@ -1767,9 +1798,9 @@ function DetailPanel({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  // ボタン近くに出すインライン入力欄（却下理由 / 再考コメント / 学び候補 / スルー日付）
+  // ボタン近くに出すインライン入力欄（再生成コメント / 再通知日付 / カード化しないの確認）
   const [panelMode, setPanelMode] = useState<
-    "reject" | "learn" | "revision" | "snooze" | "post" | null
+    "revision" | "snooze" | "ignoreSender" | null
   >(null);
   const [inputText, setInputText] = useState("");
 
@@ -1842,52 +1873,58 @@ function DetailPanel({
     }
   };
 
-  const openPanel = (mode: "reject" | "learn" | "revision" | "snooze" | "post") => {
+  // カードに記録された返信先から送信元アドレスを取り出す（「今後カード化しない」用。メール以外は空）。
+  const senderEmail =
+    item?.reply_to?.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/)?.[0]?.toLowerCase() ?? "";
+  const openPanel = (mode: "revision" | "snooze" | "ignoreSender") => {
     const opening = panelMode !== mode;
     setPanelMode(opening ? mode : null);
-    // スルーは日付入力。既定は30日後。
+    // 再通知は日付入力。既定は30日後。
     if (opening && mode === "snooze") {
       const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
       setInputText(d.toISOString().slice(0, 10));
-    } else if (opening && mode === "post") {
-      setInputText(item.reply_to || ""); // メールの宛先（保存済みなら初期表示）
     } else {
       setInputText("");
     }
     setMsg(null);
   };
+  // 提案カード（人格・文体・案件文脈）だけ「対応＝ファイルへ反映」に実処理がある。
+  // 返信カードは対応しても閉じるだけ＝「完了」1つに統合（学習・自動クローズは実返信検知で自動実行）。
+  const isProposal = isProposalType(item?.type);
   const approve = () =>
     act(async () => {
       // 見ていたスレッド最終IDを送り、cronでの新着とズレていたらサーバが409
       const r = await api.setStatus(item.id, "approved", undefined, item.thread_last_id ?? "");
-      if (r.applied?.applied) return `承認し、${r.applied.target} へ自動反映しました。`;
-      if (r.applied?.msg) return `承認しました（反映スキップ: ${r.applied.msg}）。`;
-      return "承認しました。送信は手動でお願いします。";
-    }, "承認しました。");
-  const confirmReject = () =>
-    act(async () => {
-      await api.setStatus(item.id, "rejected", inputText.trim());
-    }, "却下しました。");
+      if (r.applied?.applied) return `対応し、${r.applied.target} へ反映しました。`;
+      if (r.applied?.msg) return `対応しました（反映スキップ: ${r.applied.msg}）。`;
+      return "対応しました。";
+    }, "対応しました。");
   const confirmRevision = () =>
     act(async () => {
       await api.setStatus(item.id, "revision", inputText.trim());
-    }, "AIに再考を依頼しました（Claude Codeでの再生成待ち）。");
+    }, "AIに再生成を依頼しました（Claude Codeでの再生成待ち）。");
+  // 返信カードの「完了」／提案カードの「対応不要」共用。どちらもカードを閉じるだけ。
   const markDone = () =>
     act(async () => {
       await api.setStatus(item.id, "done");
-    }, "対応不要（対応済み）にしました。※却下とは別扱い（草案の良し悪しは学習しません）。");
+    }, "完了にしました（このカードを閉じました）。");
+  const confirmIgnoreSender = () =>
+    act(async () => {
+      const r = await api.ignoreSender(item.id);
+      return `今後 ${r.sender} からのメールはカード化しません。このカードは閉じました。`;
+    }, "今後カード化しない送信元に登録しました。");
   const confirmSnooze = () =>
     act(async () => {
       await api.snooze(item.id, inputText);
-    }, `スルーしました（${inputText} に承認待ちへ復活）。`);
+    }, `再通知を予約しました（${inputText} に対応待ちへ再表示）。`);
   const unsnooze = () =>
     act(async () => {
       await api.snooze(item.id, null);
-    }, "スルーを解除しました。");
+    }, "再通知の予約を解除しました。");
   const revert = () =>
     act(async () => {
       await api.setStatus(item.id, "pending");
-    }, "承認待ちへ差し戻しました。");
+    }, "対応待ちへ差し戻しました。");
   const saveEdit = () =>
     act(async () => {
       // 「こう返しては？」の文だけを差し替える（元メッセージ等の他セクションは保持）
@@ -1899,24 +1936,6 @@ function DetailPanel({
       if (r.already) return "すでに生成中です。";
       return "草案の生成を開始しました（生成中…）。";
     }, "生成を開始しました。");
-  // Asanaへコメント投稿（社内・訂正可）／メールは下書き作成のみ（送信はしない）
-  const confirmPost = () =>
-    act(async () => {
-      const d = draftText(item.body);
-      if (!d) throw new Error("ドラフトがありません。");
-      if (item.source === "asana") {
-        await api.postAsanaComment(item.id, d, item.thread_last_id ?? "");
-        return "Asanaにコメントを投稿し、対応済みにしました。";
-      }
-      const r = await api.mailDraft(item.id, d, inputText.trim() || undefined);
-      return `下書きを作成しました（${r.box}／宛先: ${r.to}）。送信はメール画面で行ってください。`;
-    }, "実行しました。");
-  const confirmLearn = () => {
-    const cid = `${item.id}-learn-${Date.now()}`;
-    act(async () => {
-      await api.saveRuleCandidate(cid, `${item.title} からの学び`, inputText.trim());
-    }, "学び候補を保存しました。");
-  };
   const copyBody = async () => {
     const d = draftText(item.body);
     if (!d) {
@@ -1933,9 +1952,17 @@ function DetailPanel({
         <div className="badges">
           <SourceBadge source={item.source} />
           <StatusBadge status={item.status} />
-          <span className="badge audience">{AUDIENCE_LABELS[item.audience]}</span>
         </div>
         <div className="head-actions">
+          {item.spark_url && (
+            <a
+              className="btn ghost sm spark-open"
+              href={item.spark_url}
+              title="このスレッドをSparkで開く（返信はSparkで）"
+            >
+              ⚡ Sparkで開く
+            </a>
+          )}
           {item.source_ref && /^https?:\/\//i.test(item.source_ref) && (
             <a
               className="icon-btn source"
@@ -1973,12 +2000,8 @@ function DetailPanel({
       )}
 
       <div className="body-section">
-        <div className="body-head">
-          <h3>やり取り</h3>
-        </div>
         <BodySections
           body={item.body}
-          source={item.source}
           draftStatus={item.draft_status}
           startedAt={item.draft_started_at}
           onGenerate={generate}
@@ -1986,6 +2009,17 @@ function DetailPanel({
           draftActions={
             !editing ? (
               <>
+                {item.source_ref && /^https?:\/\//i.test(item.source_ref) && (
+                  <a
+                    className="btn ghost sm"
+                    href={item.source_ref}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="元のスレッドを開く（原文で確認・そのまま返信できる）"
+                  >
+                    🔗 {SOURCE_LABELS[item.source]}で開く
+                  </a>
+                )}
                 <button className="btn ghost sm" onClick={copyBody}>
                   返信文をコピー
                 </button>
@@ -2032,14 +2066,14 @@ function DetailPanel({
 
       {item.status === "revision" && (
         <div className="banner warn">
-          ↩ AIに再考を依頼済み。Claude Codeに「受信箱の再考ぶんを処理して」と頼むと、
-          コメントを踏まえたv2が生成され「承認待ち」に戻ります。
+          ↩ AIに再生成を依頼済み。Claude Codeに「受信箱の再考ぶんを処理して」と頼むと、
+          コメントを踏まえたv2が生成され「対応待ち」に戻ります。
         </div>
       )}
 
       {snoozed && (
         <div className="banner info">
-          ⏰ スルー中（{item.snooze_until?.slice(0, 10)} に承認待ちへ自動復活）。
+          ⏰ 再通知待ち（{item.snooze_until?.slice(0, 10)} に対応待ちへ再表示）。
         </div>
       )}
 
@@ -2062,125 +2096,74 @@ function DetailPanel({
       <div className="actions">
         {item.status === "pending" && (
           <>
-            <button className="btn approve" disabled={busy} onClick={approve}>
-              ✓ 承認
-            </button>
-            {(item.source === "asana" || item.source === "gmail") &&
-              !!draftText(item.body) && (
-                <button
-                  className={`btn primary ${panelMode === "post" ? "on" : ""}`}
-                  disabled={busy}
-                  onClick={() => openPanel("post")}
-                  title={
-                    item.source === "asana"
-                      ? "この草案をAsanaにコメントとして投稿します（社内。あとから訂正できます）"
-                      : "この草案をメールの下書きに作ります。送信はしません（送信はメール画面で）"
-                  }
-                >
-                  {item.source === "asana" ? "📤 Asanaに投稿" : "✉️ 下書きを作成"}
+            {isProposal ? (
+              // 提案カード：対応＝ファイルへ反映。反映する/しないを分けて残す。
+              <>
+                <button className="btn approve" disabled={busy} onClick={approve} title="この提案を対応し、対象ファイルへ追記で反映します。">
+                  ✓ 対応して反映
                 </button>
-              )}
+                <button className="btn ghost" disabled={busy} onClick={markDone} title="この提案は反映せず、カードを閉じます。">
+                  ✔ 対応不要
+                </button>
+              </>
+            ) : (
+              // 返信カード：閉じるだけ＝1つに統合。学習・自動クローズは実返信検知で自動実行。
+              <button className="btn approve" disabled={busy} onClick={markDone} title="このカードを閉じます（対応済み／返信不要どちらでも）。返信の下書きは、実際に社長が送った内容との食い違いが自動で学習されます。">
+                ✓ 完了
+              </button>
+            )}
             <button
               className={`btn revision ${panelMode === "revision" ? "on" : ""}`}
               disabled={busy}
               onClick={() => openPanel("revision")}
             >
-              ↩ AIに再考させる
-            </button>
-            <button className="btn ghost" disabled={busy} onClick={markDone} title="返信不要・自分で対応済みなど。却下とは別で、草案の良し悪しは学習しません。">
-              ✔ 対応不要
-            </button>
-            <button
-              className={`btn reject ${panelMode === "reject" ? "on" : ""}`}
-              disabled={busy}
-              onClick={() => openPanel("reject")}
-            >
-              ✕ 却下
+              ↩ 再生成
             </button>
             {snoozed ? (
-              <button className="btn ghost" disabled={busy} onClick={unsnooze}>
-                ⏰ スルー解除
+              <button className="btn ghost" disabled={busy} onClick={unsnooze} title="予約した再通知を取り消し、いま対応待ちに戻します。">
+                ⏰ 再通知を解除
               </button>
             ) : (
               <button
                 className={`btn ghost ${panelMode === "snooze" ? "on" : ""}`}
                 disabled={busy}
                 onClick={() => openPanel("snooze")}
+                title="今は保留し、指定した日にもう一度この対応待ちに出します。"
               >
-                → スルー（後で）
+                ⏰ 再通知（後で）
+              </button>
+            )}
+            {senderEmail && (
+              <button
+                className={`btn ghost ${panelMode === "ignoreSender" ? "on" : ""}`}
+                disabled={busy}
+                onClick={() => openPanel("ignoreSender")}
+                title="この送信元からのメールは今後カードを作りません（返信不要な送信元の整理用。草案は学習しません）"
+              >
+                🔕 今後カード化しない
               </button>
             )}
           </>
         )}
         {item.status !== "pending" && (
           <button className="btn ghost" disabled={busy} onClick={revert}>
-            ↺ 承認待ちへ差し戻し
+            ↺ 対応待ちへ差し戻し
           </button>
         )}
-        <button
-          className={`btn ghost ${panelMode === "learn" ? "on" : ""}`}
-          disabled={busy}
-          onClick={() => openPanel("learn")}
-        >
-          ★ 学び候補として保存
-        </button>
       </div>
 
-      {panelMode === "post" && (
-        <div className="inline-panel post">
+      {panelMode === "ignoreSender" && (
+        <div className="inline-panel">
           <label>
-            {item.source === "asana"
-              ? "この内容でAsanaにコメントします（社内のやり取り。あとから訂正コメントも出せます）"
-              : "この内容でメールの下書きを作ります。送信はしません（最後の送信はメール画面で）"}
+            この送信元からのメールは今後カード化しません（返信不要なものの整理用）。よろしいですか？
           </label>
-          {item.source === "gmail" && (
-            <>
-              <div className="post-to">
-                <span>宛先{item.reply_to ? "" : "（このカードには未保存。確認して入力してください）"}</span>
-                <input
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="例: 山田太郎 <yamada@example.com>"
-                />
-              </div>
-              <div className="post-meta">
-                件名: Re: {item.reply_subject || item.title}
-                {item.thread_last_id ? "／同じスレッドに繋がります" : "／新規スレッドになります"}
-              </div>
-            </>
-          )}
-          <pre className="post-preview">{draftText(item.body)}</pre>
-          <div className="inline-actions">
-            <button className="btn ghost sm" onClick={() => setPanelMode(null)}>
-              やめる
-            </button>
-            <button
-              className="btn primary sm"
-              disabled={busy || (item.source === "gmail" && !inputText.trim())}
-              onClick={confirmPost}
-            >
-              {item.source === "asana" ? "投稿する" : "下書きを作る"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {panelMode === "reject" && (
-        <div className="inline-panel reject">
-          <label>却下理由（この下書きに記録され、記憶にも蓄積されます。任意）</label>
-          <textarea
-            autoFocus
-            rows={3}
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            placeholder="例: トーンが固い。社内向けなのでもっと砕けてよい。"
-          />
+          <p className="ignore-target">🔕 {senderEmail}</p>
           <div className="inline-actions">
             <button className="btn ghost sm" onClick={() => setPanelMode(null)}>
               取消
             </button>
-            <button className="btn reject sm" disabled={busy} onClick={confirmReject}>
-              却下を確定
+            <button className="btn sm" disabled={busy} onClick={confirmIgnoreSender}>
+              今後カード化しない
             </button>
           </div>
         </div>
@@ -2188,7 +2171,7 @@ function DetailPanel({
 
       {panelMode === "snooze" && (
         <div className="inline-panel snooze">
-          <label>いつまでスルーする？（この日に承認待ちへ自動復活します）</label>
+          <label>いつ再通知する？（この日にもう一度「対応待ち」へ出します）</label>
           <input
             type="date"
             value={inputText}
@@ -2203,7 +2186,7 @@ function DetailPanel({
               disabled={busy || !inputText}
               onClick={confirmSnooze}
             >
-              この日まで流す
+              この日に再通知
             </button>
           </div>
         </div>
@@ -2212,7 +2195,7 @@ function DetailPanel({
       {panelMode === "revision" && (
         <div className="inline-panel revision">
           <label>
-            AIへの再考コメント（元メッセージ＋記憶＋文脈と併せてv2を生成します）
+            AIへの再生成コメント（元メッセージ＋記憶＋文脈と併せてv2を生成します）
           </label>
           <textarea
             autoFocus
@@ -2230,39 +2213,14 @@ function DetailPanel({
               disabled={busy || !inputText.trim()}
               onClick={confirmRevision}
             >
-              再考を依頼
-            </button>
-          </div>
-        </div>
-      )}
-
-      {panelMode === "learn" && (
-        <div className="inline-panel learn">
-          <label>今後ずっと守りたい学び（Obsidianで恒久ルールへ昇格できます）</label>
-          <textarea
-            autoFocus
-            rows={3}
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            placeholder="例: この案件は必ず『当日中に一次返信』と添える。"
-          />
-          <div className="inline-actions">
-            <button className="btn ghost sm" onClick={() => setPanelMode(null)}>
-              取消
-            </button>
-            <button
-              className="btn primary sm"
-              disabled={busy || !inputText.trim()}
-              onClick={confirmLearn}
-            >
-              学び候補を保存
+              再生成を依頼
             </button>
           </div>
         </div>
       )}
 
       <p className="foot-note">
-        承認しても自動送信はしません。実際の送信・実行は社長ご自身が各ツールで行ってください。
+        「完了」にしても自動送信はしません。実際の送信・実行は社長ご自身が各ツールで行ってください。
       </p>
     </div>
   );

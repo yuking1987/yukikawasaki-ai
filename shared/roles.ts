@@ -151,6 +151,7 @@ export interface ItemFrontmatter {
   source: Source;
   project: string;
   project_label?: string; // 案件の日本語表示名（未指定なら project を表示）
+  section?: string; // Asana等のプロジェクト内セクション名（どの列/区切りのタスクか）
   due_on?: string; // 期限（Asana等）。カードに表示。
   audience: Audience;
   type: ItemType;

@@ -19,7 +19,8 @@
     "ingest:asana": "tsx server/ingest-asana.ts",
     "ingest:slack": "tsx server/ingest-slack.ts",
     "backfill:attach": "tsx server/backfill-attachments.ts",
-    "backfill:notes": "tsx server/backfill-asana-notes.ts"
+    "backfill:notes": "tsx server/backfill-asana-notes.ts",
+    "backfill:sections": "tsx server/backfill-asana-sections.ts"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

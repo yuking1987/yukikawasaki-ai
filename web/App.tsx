@@ -209,9 +209,9 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo">🏢</span>
+          <span className="logo">⚡</span>
           <div>
-            <h1>バーチャル制作会社</h1>
+            <h1>YUKI KAWASAKI AI</h1>
             <p className="sub">対応ダッシュボード — 社長は判断・対応だけ</p>
           </div>
         </div>
@@ -1051,6 +1051,12 @@ function ItemList({
           <div className="card-title">{it.title}</div>
           <div className="card-meta">
             <span>{it.project_label || it.project}</span>
+            {it.section && (
+              <>
+                <span>·</span>
+                <span>{it.section}</span>
+              </>
+            )}
             {it.due_on && (
               <>
                 <span>·</span>
@@ -1982,6 +1988,7 @@ function DetailPanel({
       <h2 className="detail-title">{item.title}</h2>
       <div className="detail-meta">
         <Meta k="案件" v={item.project_label || item.project} />
+        {item.section && <Meta k="セクション" v={item.section} />}
         {item.due_on && <Meta k="期限" v={item.due_on} />}
       </div>
 

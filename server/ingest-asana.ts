@@ -168,7 +168,9 @@ async function main() {
   console.log(`[asana] 担当者=${assigneeId}`);
 
   const since = new Date(Date.now() - DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const FIELDS = "name,notes,due_on,completed,modified_at,permalink_url,projects.name";
+  // memberships.* を足すと「どのプロジェクトの、どのセクション（列/区切り）か」まで取れる。
+  const FIELDS =
+    "name,notes,due_on,completed,modified_at,permalink_url,projects.name,memberships.project.name,memberships.section.name";
   // (1) 川崎さんに割当・未完了・最近更新のタスク（本人の担当仕事）
   const assigned = await asana<any[]>(
     `/tasks?assignee=${assigneeId}&workspace=${ws.gid}&completed_since=now&modified_since=${since}` +
@@ -208,6 +210,13 @@ async function main() {
     const key = `asana:${t.gid}`;
     const id = `asana-${t.gid}`;
     const proj = t.projects?.[0]?.name || "未分類";
+    // 代表プロジェクト（proj）と同じプロジェクトのセクション名を拾う。
+    // 1タスクが複数プロジェクトに属することがあるため、名前が一致する所属だけ見る。
+    const section: string =
+      (t.memberships || []).find(
+        (m: any) => m.project?.name === proj && m.section?.name
+      )?.section?.name || "";
+    const place = section ? `${proj} › ${section}` : proj;
     const match = existing.find((it) => it.thread_key === key);
 
     // 完了タスクは自動クローズ
@@ -241,7 +250,7 @@ async function main() {
     // （AIがそのパスを開いて画像そのものを確認できるようにするため）。取得失敗は無視して続行。
     const attachSection = await collectAsanaAttachments(t.gid, id);
     const thread =
-      `件名: ${t.name}\n\n【説明欄】\n${notesClean || "（説明なし）"}${attachSection}\n\n` +
+      `件名: ${t.name}\n場所: ${place}\n\n【説明欄】\n${notesClean || "（説明なし）"}${attachSection}\n\n` +
       comments
         .map(
           (c) =>
@@ -332,6 +341,7 @@ async function main() {
       id,
       source: "asana",
       project: proj,
+      section: section || undefined,
       project_label: clientLabel || undefined,
       audience: mentionedOnly ? "internal" : "external",
       type: "reply",

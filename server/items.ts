@@ -507,6 +507,19 @@ export async function applyProposalOnApprove(
 }
 
 /**
+ * 奥へアーカイブ済みの mid かどうか。掃除(gb-archive.sh)が古いエントリを
+ * _archive/ へ移した際に _memory/_archived-mids.txt へ集約する。前面ファイルから
+ * 消えても、再取り込み時にここを見れば二重登録を防げる（記憶は奥に残っている）。
+ */
+async function isArchivedMid(dir: string, messageId: string): Promise<boolean> {
+  if (!messageId) return false;
+  const ledger = path.join(dir, "_archived-mids.txt");
+  if (!fs.existsSync(ledger)) return false;
+  const txt = await fsp.readFile(ledger, "utf8");
+  return txt.includes(messageId);
+}
+
+/**
  * 正例（あなたが実際に返した打ち返し）を _memory/replies.md に蓄積。
  * これは人格学習の"金の教師データ"（スレッド→本人の実返信のペア）。
  * messageId で重複を防ぐ。
@@ -532,6 +545,8 @@ export async function appendReplyExample(rec: {
     const existing = await fsp.readFile(file, "utf8");
     if (existing.includes(marker)) return { recorded: false };
   }
+  // 奥へ移した過去分の再登録も防ぐ（前面が軽くなっても記憶喪失にはしない）
+  if (await isArchivedMid(dir, rec.messageId)) return { recorded: false };
   const meta = [rec.domain, rec.project, rec.audience].filter(Boolean).join(" / ");
   let entry = `\n## ${rec.when} | ${rec.subject}${meta ? ` | ${meta}` : ""}\n${marker}\n`;
   if (rec.to) entry += `<!-- to:${rec.to} -->\n`;
@@ -600,6 +615,9 @@ export async function appendDraftVsSent(rec: {
     const existing = await fsp.readFile(file, "utf8");
     if (existing.includes(marker)) return { recorded: false, similarity: sim, tag };
   }
+  // 奥へ移した過去分の再登録も防ぐ（前面が軽くなっても記憶喪失にはしない）
+  if (await isArchivedMid(dir, rec.messageId))
+    return { recorded: false, similarity: sim, tag };
   const meta = [rec.domain, rec.project, rec.audience].filter(Boolean).join(" / ");
   const pct = Math.round(sim * 100);
   let entry = `\n## ${rec.when} | ${rec.subject}${meta ? ` | ${meta}` : ""}\n`;

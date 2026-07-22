@@ -105,6 +105,8 @@ export function App() {
   // メインエリア（一覧）のスクロール枠。初期表示は最下部にしたい。
   const leftColRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
+  // ダッシュボード入場時に一度だけ先頭を自動選択するための印（明示的な未選択は尊重する）。
+  const didAutoSelectRef = useRef(false);
 
   const reload = useCallback(async () => {
     try {
@@ -139,6 +141,19 @@ export function App() {
       setError((e as Error).message);
     }
   }, [filters]);
+
+  // 完了/再生成/再通知（後で）/今後カード化しない のあと：今のカードを閉じて次のカードへ送る。
+  // 一覧での次を優先、無ければ前、どちらも無ければ null＝空状態（「左の一覧から選択してください。」）。
+  const resolveAndAdvance = useCallback(() => {
+    setSelectedId((cur) => {
+      if (!cur) return null;
+      const idx = items.findIndex((it) => it.id === cur);
+      if (idx === -1) return null;
+      const next = items[idx + 1] ?? items[idx - 1] ?? null;
+      return next ? next.id : null;
+    });
+    reload();
+  }, [items, reload]);
 
   useEffect(() => {
     reload();
@@ -192,9 +207,16 @@ export function App() {
     }
   }, [items, view]);
 
-  // 初期未選択のときだけ先頭を自動選択（明示選択は上書きしない）
+  // ダッシュボード入場時に一度だけ先頭を自動選択する（明示選択は上書きしない）。
+  // ×で閉じた／カード処理で次が無く未選択になった後は自動で選び直さず、空状態
+  //（「左の一覧から選択してください。」）を尊重する。
   useEffect(() => {
-    if (view === "dashboard" && !selectedId && items.length > 0) {
+    if (view !== "dashboard") {
+      didAutoSelectRef.current = false; // 離れたら次回入場でまた初期選択できるように戻す
+      return;
+    }
+    if (!didAutoSelectRef.current && !selectedId && items.length > 0) {
+      didAutoSelectRef.current = true;
       setSelectedId(items[0].id);
     }
   }, [items, selectedId, view]);
@@ -273,6 +295,7 @@ export function App() {
               id={selectedId}
               onChanged={reload}
               onClose={() => setSelectedId(null)}
+              onResolve={resolveAndAdvance}
             />
           </div>
         </>
@@ -1793,10 +1816,12 @@ function DetailPanel({
   id,
   onChanged,
   onClose,
+  onResolve,
 }: {
   id: string | null;
   onChanged: () => void;
   onClose: () => void;
+  onResolve: () => void; // 完了/再生成/再通知/カード化しない後：閉じて次のカードへ
 }) {
   const [item, setItem] = useState<ItemFull | null>(null);
   const [editing, setEditing] = useState(false);
@@ -1864,14 +1889,24 @@ function DetailPanel({
   const snoozed =
     !!item.snooze_until && Date.parse(item.snooze_until) > Date.now();
 
-  // fn が文字列を返せばそれを、無ければ fallback をメッセージに（load後に表示して消えないように）
-  const act = async (fn: () => Promise<string | void>, fallback: string) => {
+  // fn が文字列を返せばそれを、無ければ fallback をメッセージに（load後に表示して消えないように）。
+  // advance=true のときは、成功後にこのカードを閉じて次のカードへ送る（完了/再生成/再通知/カード化しない）。
+  const act = async (
+    fn: () => Promise<string | void>,
+    fallback: string,
+    advance = false
+  ) => {
     setBusy(true);
     try {
       const custom = await fn();
-      await load();
-      onChanged();
-      setMsg(typeof custom === "string" ? custom : fallback);
+      if (advance) {
+        // 次カードへ切り替わるので、このカードの再読込・メッセージ表示は不要。
+        onResolve();
+      } else {
+        await load();
+        onChanged();
+        setMsg(typeof custom === "string" ? custom : fallback);
+      }
     } catch (e) {
       setMsg("⚠ " + (e as Error).message);
     } finally {
@@ -1908,21 +1943,21 @@ function DetailPanel({
   const confirmRevision = () =>
     act(async () => {
       await api.setStatus(item.id, "revision", inputText.trim());
-    }, "AIに再生成を依頼しました（Claude Codeでの再生成待ち）。");
+    }, "AIに再生成を依頼しました（Claude Codeでの再生成待ち）。", true);
   // 返信カードの「完了」／提案カードの「対応不要」共用。どちらもカードを閉じるだけ。
   const markDone = () =>
     act(async () => {
       await api.setStatus(item.id, "done");
-    }, "完了にしました（このカードを閉じました）。");
+    }, "完了にしました（このカードを閉じました）。", true);
   const confirmIgnoreSender = () =>
     act(async () => {
       const r = await api.ignoreSender(item.id);
       return `今後 ${r.sender} からのメールはカード化しません。このカードは閉じました。`;
-    }, "今後カード化しない送信元に登録しました。");
+    }, "今後カード化しない送信元に登録しました。", true);
   const confirmSnooze = () =>
     act(async () => {
       await api.snooze(item.id, inputText);
-    }, `再通知を予約しました（${inputText} に対応待ちへ再表示）。`);
+    }, `再通知を予約しました（${inputText} に対応待ちへ再表示）。`, true);
   const unsnooze = () =>
     act(async () => {
       await api.snooze(item.id, null);

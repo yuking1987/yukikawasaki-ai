@@ -215,7 +215,13 @@ export function App() {
       didAutoSelectRef.current = false; // 離れたら次回入場でまた初期選択できるように戻す
       return;
     }
-    if (!didAutoSelectRef.current && !selectedId && items.length > 0) {
+    // 既に選択がある（localStorage復元・手動選択・処理後の次カード等）なら初期自動選択は済み扱い。
+    // これで「最後の1枚を完了→未選択(null)」にした直後に、残っているカードを選び直さない＝空状態を保つ。
+    if (selectedId) {
+      didAutoSelectRef.current = true;
+      return;
+    }
+    if (!didAutoSelectRef.current && items.length > 0) {
       didAutoSelectRef.current = true;
       setSelectedId(items[0].id);
     }

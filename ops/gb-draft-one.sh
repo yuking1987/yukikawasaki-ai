@@ -39,7 +39,7 @@ read -r -d '' PROMPT <<EOF
 大原則: 要約や実績表だけで機械的に判断しない。まず ${FILE} の「## 元メッセージ」を最初から最後まで熟読し、同じ客の過去のやりとり（vault/70_references/asana-maintenance-precedents.md の当該クライアント欄、context.md の「## 保守対応履歴」）まで踏まえてから草案を書く。前回と状況が違えば実績に引きずられず熟考して判断を変える。分からない点は勝手に埋めず「要・川崎確認」または先方への確認事項として残す。
 
 手順:
-1. ${FILE} の「## 元メッセージ」（スレッド全体）を熟読する。本文に「【添付 N件】…→ vault/_attachments/…」があれば、それが先方から届いた素材の実ファイル。素材が揃っているかは文言でなく添付で判断する。本文に添付パスがあれば、判断に関わるかどうかで選り好みせず、Read で実ファイルを毎回すべて開いて実物を確認する（画像＝バナー/ロゴの比率・既存とのバランス、スクショ＝指摘箇所、PDF＝中身を必ず目で見る。開ける形式は例外なく全て開く。Excel は本文に文字が展開済みだが、修正指示は貼り込み画像に描かれていることが多いので『貼り込み画像（N行目付近）→ …』のパスも毎回すべて Read で開いて実物を見る＝生の .xlsx は Read で読めないため、展開テキスト＋抜き出し画像の両方で確認する）。
+1. ${FILE} の「## 元メッセージ」（スレッド全体）を熟読する。本文に「【添付 N件】…→ vault/_attachments/…」があれば、それが先方から届いた素材の実ファイル。素材が揃っているかは文言でなく添付で判断する。本文に添付パスがあれば、判断に関わるかどうかで選り好みせず、Read で実ファイルを毎回すべて開いて実物を確認する（画像＝バナー/ロゴの比率・既存とのバランス、スクショ＝指摘箇所、PDF＝中身を必ず目で見る。開ける形式は例外なく全て開く。Excel は本文に文字が展開済みだが、修正指示は貼り込み画像に描かれていることが多いので『貼り込み画像（N行目付近）→ …』のパスも毎回すべて Read で開いて実物を見る＝生の .xlsx は Read で読めないため、展開テキスト＋抜き出し画像の両方で確認する）。★本文に aun.app（画面メモ）のリンクが1つでもあれば、判断に関わるかどうかで選り好みせず、毎回すべて WebFetch で開いて実物を読む（例外なし・添付を毎回全部開くのと同じ）。画面メモは先方/GBがその画面に直接描いた修正指示の一次資料で、修正指示は本文テキストでなく画面メモに描かれていることが多い。開いたら番号付きコメント（画面メモ1,2,3…）を1件残らず読み、素材充足・対象範囲・工数の判断に使う（「画面メモ○も対象か」は自分で画面メモを読んで確定し、要・川崎確認に回さない）。読み取った画面メモの各項目と工数への影響は「## 判定サマリ」に書き残す（後の食い違い学習で工数判断の材料になるように）。aun.app は aun-mypage.tools へ302リダイレクトするので、1回目の WebFetch がリダイレクト先URLを返したら、そのURLで2回目の WebFetch を呼んで中身を取得する。ログイン要求等で本当に開けなかった時だけ『要・川崎確認』に残す。
 2. vault/00_persona/kawasaki.md（人格）、社外なら vault/10_rules/tone_external.md・社内なら tone_internal.md、あれば該当する vault/20_projects/{client}/context.md と vault/70_references/asana-maintenance-precedents.md の当該クライアント欄を読み、文体・前提・過去の工数判断を合わせる。
 3.【サイトの修正・改修依頼のとき】返信を書く前に vault/70_references/maintenance-judgment.md の3段手順を実行する（段階0=保守案件一覧で種別sumabi=月2/通常=月3を確定、段階1=素材充足、段階2=保守内か有償◯hか＝工数表と過去実績で照合、段階3=影響範囲）。工数表に無い/線引きが割れる/金額の確定提示/影響範囲大は独断せず「要・川崎判断」。金額の確定提示はしない。
 3-2.【ローカルGitで実態を確認】context.md に /Users/yukikawasaki/github/... のローカルリポジトリの記載があれば、必ず開いて確かめてから工数を出す。「レポあり」と書き写すだけにしない。コードを見れば即答できることを「要・川崎判断」に回さない。
@@ -60,8 +60,9 @@ EOF
 
 echo "===== $(date '+%F %T') draft-one ${ID} 開始 ====="
 # --strict-mcp-config: 草案づくりに使わない Slack/Asana 連携(.mcp.json)を読み込ませない。
-# この草案生成は Read,Edit,Grep,Glob しか使わない＝連携は不要。外すと起動が約20秒速くなる。
-if "$CLAUDE" -p "$PROMPT" --strict-mcp-config --permission-mode acceptEdits --allowedTools "Read,Edit,Grep,Glob" 2>&1; then
+# この草案生成は Read,Edit,Grep,Glob と WebFetch（画面メモ aun.app の読み取り）しか使わない＝
+# MCP連携は不要。外すと起動が約20秒速くなる。WebFetchは外部URLの読み取りのみ（送信・実行なし）。
+if "$CLAUDE" -p "$PROMPT" --strict-mcp-config --permission-mode acceptEdits --allowedTools "Read,Edit,Grep,Glob,WebFetch" 2>&1; then
   # 本文の「## 確認（生成前）」を frontmatter asks[] に安全変換（YAMLはgray-matter経由）。setstatus前に。
   node ops/asks-from-body.mjs "$FILE" 2>&1 || echo "$(date '+%F %T') 注意: asks-from-body でエラー（本文はそのまま残ります）。"
   setstatus clear

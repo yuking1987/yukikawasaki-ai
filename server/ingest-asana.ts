@@ -91,6 +91,45 @@ function commentBody(c: { text?: string; html_text?: string }): string {
 }
 
 /**
+ * コメントの“実際の向き”を判定する。
+ * トコトン等の連携は、先方（客）の投稿もGBの返信も、Asana上は同じ「サポートGB」名義で
+ * 流し込む。そのため投稿者名だけでは向きが分からず、本文の「◇発信者：」行が唯一の手掛かり。
+ * - kawasaki … 川崎さん本人のアカウント投稿（＝学習のお手本にできる本人の返信）
+ * - gb       … GBサポート発信（定型の客宛返信 or 発信者行の無いサポートGB通知）
+ * - client   … 先方relay（サポートGB名義だが本文の発信者が客＝取り違えの元凶）
+ * - other    … 井上・江上さん等の社内メンバー
+ */
+type CommentSide = "kawasaki" | "gb" | "client" | "other";
+function commentSide(c: {
+  text?: string;
+  html_text?: string;
+  created_by?: { name?: string };
+}): CommentSide {
+  const name = c.created_by?.name || "";
+  if (/川崎|kawasaki|yuki kawasaki/i.test(name)) return "kawasaki";
+  if (/サポートGB/i.test(name)) {
+    const m = commentBody(c).match(/◇\s*発信者[　\s]*[：:]\s*(.+)/);
+    const sender = m ? m[1].trim() : "";
+    if (!sender) return "gb"; // 発信者行が無い＝GB側の通知とみなす（従来挙動）
+    return /グレート・?ビーンズ|great\s*beans|サポートチーム/i.test(sender) ? "gb" : "client";
+  }
+  return "other";
+}
+
+/**
+ * 現在の草案が「返信不要／対応済み」の“打ち返さない札”かどうか。
+ * gb-draft はプレースホルダ「（AIが草案を作成予定）」しか拾わないため、この札のまま
+ * 新着コメントが来ると自動で作り直されず放置される。復活時にプレースホルダへ戻す判定に使う。
+ */
+function isNoReplyMarker(draft: string): boolean {
+  const d = (draft || "").trim();
+  if (!d) return false;
+  // gb-draft が書く実際の札の形にだけ一致させる（本物の草案が偶然「返信不要」の語を
+  // 含んでも誤ってリセットしないため）。例:「（返信不要のためドラフトなし）」。
+  return /返信不要のため(ドラフト|草案)なし/.test(d);
+}
+
+/**
  * タスクの添付を取得し、実ファイルを保存して本文用ブロックを返す。
  * 素材が届いているかは打ち返し判定の段階1の根拠。取得/保存に失敗してもメタ情報は残す。
  */
@@ -259,65 +298,88 @@ async function main() {
         .join("\n\n---\n\n");
     const threadSection = thread;
 
-    // 「サポートGB / 川崎さん」が最後のコメント＝クライアントへ返信済みの合図（対応済み）。
+    // 「GB側（川崎さん本人 or GBサポート発信）」が最後のコメント＝クライアントへ返信済みの合図。
     // 井上さん等の社内メンバーの最後コメントは"未対応"扱い（社内フォローが必要なため）。
+    // ※トコトンは先方の投稿もサポートGB名義で流すので、名前ではなく commentSide で向きを見る。
     const lastComment = comments[comments.length - 1];
-    const gbReplied =
-      !!lastComment &&
-      /サポートGB|川崎|kawasaki|yuki kawasaki/i.test(lastComment.created_by?.name || "");
+    const lastSide = lastComment ? commentSide(lastComment) : "other";
+    // クローズ判定＝GB側が最後に返した合図。先方relay(client)・社内メンバー(other)は含めない。
+    const gbReplied = lastSide === "kawasaki" || lastSide === "gb";
+    // 学習（お手本replies＋食い違いdraft-vs-sent）に使うのは川崎さん本人の返信だけ。
+    // サポートGBのrelay（GB定型でも先方でも）は本人の言葉ではないので学習しない。
+    const kawasakiReplied = lastSide === "kawasaki";
 
     if (match) {
       if (match.status === "pending" || match.status === "revision") {
         if (match.thread_last_id !== lastId) {
-          await updateThread(match.id, threadSection, lastId);
+          // 承認待ちの本物の草案は残す（従来どおり「🔄新着」バッジで気づかせる）。
+          // ただし現在が「返信不要」札で、かつGB側の締めコメントでない新着なら、
+          // その札は今の状況に合っていないのでプレースホルダへ戻し自動で作り直させる。
+          const cur = await readItem(match.id);
+          const resetDraft =
+            !gbReplied && isNoReplyMarker(cur ? extractDraft(cur.body) : "");
+          await updateThread(match.id, threadSection, lastId, resetDraft);
           updated++;
         }
         if (gbReplied) {
-          // 本人の最後コメントを②お手本(_memory/replies.md)へ蓄積。
-          // 【食い違い学習】カードにAIの草案が付いていたら、その草案と本人の最後コメントを
-          // 突き合わせて _memory/draft-vs-sent.md に残す（メール/Slackと同じ形で学ぶ）。
-          const sent = commentBody(lastComment);
-          const prevIn = [...comments.slice(0, comments.length - 1)]
-            .reverse()
-            .find((c) => !/サポートGB|川崎|kawasaki|yuki kawasaki/i.test(c.created_by?.name || ""));
-          const incoming = prevIn ? commentBody(prevIn) : "";
-          if (sent) {
-            const r2 = await appendReplyExample({
-              messageId: `asana-${lastComment.gid}`,
-              when: (lastComment.created_at || "").slice(0, 16).replace("T", " "),
-              subject: (t.name || "(無題)").slice(0, 80),
-              project: match.project,
-              audience: match.audience,
-              incoming,
-              reply: sent,
-            });
-            if (r2.recorded) learned++;
-          }
-          const full = await readItem(match.id);
-          const draft = full ? extractDraft(full.body) : "";
-          if (sent && draft && !draft.includes("AIが草案を作成予定")) {
-            const d = await appendDraftVsSent({
-              messageId: `asana-${lastComment.gid}`,
-              when: (lastComment.created_at || "").slice(0, 16).replace("T", " "),
-              subject: (t.name || "(無題)").slice(0, 80),
-              cardId: match.id,
-              project: match.project,
-              audience: match.audience,
-              incoming,
-              draft,
-              sent,
-            });
-            if (d.recorded) diffed++;
-          }
+          // 学習は「川崎さん本人の返信」のときだけ。サポートGBのrelay（GB定型・先方どちらも）は
+          // 本人の言葉ではないので、お手本にも食い違い学習にも取り込まない（取り違え防止）。
+          if (kawasakiReplied) {
+            // 本人の最後コメントを②お手本(_memory/replies.md)へ蓄積。
+            // 【食い違い学習】カードにAIの草案が付いていたら、その草案と本人の最後コメントを
+            // 突き合わせて _memory/draft-vs-sent.md に残す（メール/Slackと同じ形で学ぶ）。
+            const sent = commentBody(lastComment);
+            // incoming＝本人が返信した"相手の直前メッセージ"。GB側(kawasaki/gb)は除き、
+            // 先方relay(client)や社内メンバー(other)を拾う（トコトンの先方relayも正しく含める）。
+            const prevIn = [...comments.slice(0, comments.length - 1)]
+              .reverse()
+              .find((c) => {
+                const s = commentSide(c);
+                return s === "client" || s === "other";
+              });
+            const incoming = prevIn ? commentBody(prevIn) : "";
+            if (sent) {
+              const r2 = await appendReplyExample({
+                messageId: `asana-${lastComment.gid}`,
+                when: (lastComment.created_at || "").slice(0, 16).replace("T", " "),
+                subject: (t.name || "(無題)").slice(0, 80),
+                project: match.project,
+                audience: match.audience,
+                incoming,
+                reply: sent,
+              });
+              if (r2.recorded) learned++;
+            }
+            const full = await readItem(match.id);
+            const draft = full ? extractDraft(full.body) : "";
+            if (sent && draft && !draft.includes("AIが草案を作成予定")) {
+              const d = await appendDraftVsSent({
+                messageId: `asana-${lastComment.gid}`,
+                when: (lastComment.created_at || "").slice(0, 16).replace("T", " "),
+                subject: (t.name || "(無題)").slice(0, 80),
+                cardId: match.id,
+                project: match.project,
+                audience: match.audience,
+                incoming,
+                draft,
+                sent,
+              });
+              if (d.recorded) diffed++;
+            }
+          } // end if (kawasakiReplied)
           // GB側が最後に返信 → 対応済みに自動クローズ（承認待ちから消える）
           await updateStatus(match.id, "done");
           closed++;
         }
       } else if (match.status === "done") {
-        // 対応済みでも、先方(非GB)から新着コメントが来たら承認待ちへ自動復活
+        // 対応済みでも、先方(非GB)から新着コメントが来たら承認待ちへ自動復活。
+        // 復活＝新しい打ち返しが要る合図なので、草案はプレースホルダへ戻して
+        // 自動下書き係に作り直させる（古い『返信不要』札のまま放置されるのを防ぐ）。
+        // updateStatus は thread_updated を false に戻すため、先に status を戻し
+        // 後から updateThread で thread_updated:true（＝「🔄新着」バッジ）を残す。
         if (match.thread_last_id !== lastId && !gbReplied) {
-          await updateThread(match.id, threadSection, lastId);
           await updateStatus(match.id, "pending");
+          await updateThread(match.id, threadSection, lastId, true);
           reopened++;
         }
       }
